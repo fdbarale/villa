@@ -1,170 +1,103 @@
 import streamlit as st
-import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime
+import json
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Gestión Villa Soñada", layout="centered")
+st.title("🕵️‍♂️ Modo Diagnóstico: Villa Soñada")
+st.write("Vamos a probar la conexión paso a paso con Banderines.")
 
-# --- LISTA DE SOCIOS ---
-SOCIOS = [
-    "A - Garcia Berberena", "B - Sierra Analisa", "C - Fernandez Natalia", 
-    "D - Novaretto Emiliano", "E - Calderon José Luis", "F - Rodriguez Matias", 
-    "G - Diser Javier", "H - Piñero Silvana", "I - Civale Florencia", 
-    "J - Molina Angel", "K - Barale Fernando", "L - Biscayart Bernardo", 
-    "M - Garcia Wild Anahi", "N - Mendez Pamela", "O - Guillermo Saul", 
-    "P - Justet Luis", "Q - RUIZ DIEGO", "R - Root Silvana", 
-    "S - Pathauer Carina", "S - Buss Valeria"
-]
+# --- BANDERÍN 1: LECTURA DE SECRETS ---
+st.subheader("🚩 Paso 1: Leer Secrets")
+try:
+    # Intentamos leer como diccionario normal
+    raw_creds = dict(st.secrets["service_account"])
+    st.success("✅ Secrets encontrados y leídos como diccionario.")
+    st.write(f"**Email del Robot:** `{raw_creds.get('client_email', 'NO ENCONTRADO')}`")
+except Exception as e:
+    st.error(f"❌ Falló Paso 1: No se pueden leer los secrets. {e}")
+    st.stop()
 
-# --- CONEXIÓN A GOOGLE SHEETS ---
-def conectar_google_sheet():
-    # 1. Definimos permisos
+# --- BANDERÍN 2: LIMPIEZA DE CLAVE PRIVADA (Aquí suele fallar) ---
+st.subheader("🚩 Paso 2: Procesar Private Key")
+try:
+    p_key = raw_creds.get("private_key", "")
+    st.write(f"Longitud original de la clave: {len(p_key)} caracteres")
+    
+    # Intento de limpieza agresiva
+    # 1. Reemplazamos \\n literal por salto de línea real
+    fixed_key = p_key.replace("\\n", "\n")
+    
+    # 2. Verificamos encabezados
+    if "-----BEGIN PRIVATE KEY-----" not in fixed_key:
+        st.error("❌ La clave no tiene el encabezado 'BEGIN PRIVATE KEY'. Está corrupta.")
+        st.stop()
+        
+    st.info("Visualización de los primeros 50 caracteres (para ver si hay saltos):")
+    st.code(fixed_key[:50]) # Mostramos el principio para ver si se ve bien
+    
+    # Actualizamos el diccionario con la clave arreglada
+    raw_creds["private_key"] = fixed_key
+    st.success("✅ Clave procesada sin errores de sintaxis Python.")
+
+except Exception as e:
+    st.error(f"❌ Falló Paso 2: Error procesando el texto de la clave. {e}")
+    st.stop()
+
+# --- BANDERÍN 3: CREAR OBJETO CREDENCIALES (Aquí salta el PEM Error) ---
+st.subheader("🚩 Paso 3: Generar Credenciales Google")
+try:
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    
-    # 2. Leemos las credenciales desde Secrets (como diccionario)
-    # Convertimos el objeto de Streamlit a un diccionario normal de Python
-    creds_dict = dict(st.secrets["service_account"])
-    
-    # 3. LA CORRECCIÓN CLAVE PARA TU ERROR:
-    # Reemplazamos los caracteres "\n" escapados por saltos de línea reales
-    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-    
-    # 4. Creamos las credenciales
-    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    
-    # 5. Autorizamos y conectamos
+    credentials = Credentials.from_service_account_info(raw_creds, scopes=scopes)
+    st.success("✅ Objeto de Credenciales creado. (¡Si llegaste acá, el PEM es válido!)")
+except ValueError as ve:
+    st.error(f"❌ Falló Paso 3 (PEM ERROR): {ve}")
+    st.warning("Esto significa que la clave privada tiene un caracter inválido.")
+    st.stop()
+except Exception as e:
+    st.error(f"❌ Falló Paso 3 (Otro Error): {e}")
+    st.stop()
+
+# --- BANDERÍN 4: AUTORIZAR CLIENTE ---
+st.subheader("🚩 Paso 4: Autorizar Cliente GSpread")
+try:
     gc = gspread.authorize(credentials)
+    st.success("✅ Cliente autorizado exitosamente.")
+except Exception as e:
+    st.error(f"❌ Falló Paso 4: No se pudo autorizar. {e}")
+    st.stop()
+
+# --- BANDERÍN 5: CONECTAR A LA HOJA ---
+st.subheader("🚩 Paso 5: Abrir Google Sheet")
+try:
     url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-    return gc.open_by_url(url)
+    st.write(f"Intentando abrir: {url}")
+    sh = gc.open_by_url(url)
+    st.success(f"✅ ¡ÉXITO! Se abrió el archivo: **{sh.title}**")
+except gspread.exceptions.APIError as api_err:
+    st.error(f"❌ Falló Paso 5 (Permisos): Google rechazó la conexión.")
+    st.write("Causa probable: El email del robot no está invitado como Editor.")
+    st.write(f"Error técnico: {api_err}")
+except Exception as e:
+    st.error(f"❌ Falló Paso 5 (No encontrado): {e}")
+    st.write("Verificá que el link sea correcto y la hoja exista.")
+    st.stop()
 
-# --- FUNCIONES DE LECTURA Y ESCRITURA ---
-def cargar_datos():
-    sh = conectar_google_sheet()
-    try:
-        worksheet = sh.worksheet("Movimientos")
-    except:
-        worksheet = sh.get_worksheet(0)
+# --- BANDERÍN 6: PRUEBA DE ESCRITURA ---
+st.subheader("🚩 Paso 6: Prueba de Escritura")
+try:
+    # Intentamos leer la primera hoja
+    worksheet = sh.get_worksheet(0)
+    st.write(f"Leyendo hoja: `{worksheet.title}`")
     
-    datos = worksheet.get_all_records()
-    return pd.DataFrame(datos)
-
-def guardar_movimiento(fecha, tipo, categoria, socio, concepto, monto):
-    sh = conectar_google_sheet()
-    try:
-        worksheet = sh.worksheet("Movimientos")
-    except:
-        worksheet = sh.get_worksheet(0)
+    # Prueba de lectura
+    val = worksheet.acell('A1').value
+    st.info(f"Valor en celda A1: {val}")
+    st.success("✅ Lectura OK. Sistema funcionando.")
     
-    # Preparamos la fila
-    nueva_fila = [
-        fecha.strftime("%Y-%m-%d"),
-        tipo,
-        categoria,
-        socio,
-        concepto,
-        float(monto)
-    ]
-    
-    # Agregamos la fila
-    worksheet.append_row(nueva_fila)
-    st.cache_data.clear()
-    return True
+except Exception as e:
+    st.error(f"❌ Falló Paso 6: Error leyendo datos. {e}")
 
-# --- INTERFAZ GRÁFICA ---
-st.title("🏡 Villa Soñada - Gestión")
-
-menu = st.sidebar.radio("Navegación", ["Cargar Movimiento", "Cuentas Corrientes", "Caja General"])
-
-# PANTALLA 1: CARGA
-if menu == "Cargar Movimiento":
-    st.header("📝 Nuevo Registro")
-    
-    tipo_operacion = st.selectbox("¿Qué vas a registrar?", ["Gasto (Salida)", "Ingreso (Cobro)"])
-    
-    with st.form("formulario_carga"):
-        col1, col2 = st.columns(2)
-        with col1:
-            fecha = st.date_input("Fecha", datetime.now())
-            monto = st.number_input("Monto ($)", min_value=0.0, step=100.0)
-        
-        with col2:
-            if tipo_operacion == "Ingreso (Cobro)":
-                socio = st.selectbox("Vecino que paga", SOCIOS)
-                categoria = "Particular"
-                concepto_def = "Expensas"
-            else:
-                destino = st.radio("Afectación", ["General (Todos)", "Particular (Uno)"])
-                if destino == "Particular (Uno)":
-                    socio = st.selectbox("Vecino afectado", SOCIOS)
-                    categoria = "Particular"
-                else:
-                    socio = "TODOS"
-                    categoria = "General"
-                concepto_def = ""
-            
-        concepto = st.text_input("Concepto / Detalle", value=concepto_def)
-            
-        enviado = st.form_submit_button("💾 Guardar en Google Drive")
-        
-        if enviado:
-            with st.spinner("Guardando..."):
-                try:
-                    guardar_movimiento(fecha, "Ingreso" if "Ingreso" in tipo_operacion else "Egreso", categoria, socio, concepto, monto)
-                    st.success("✅ ¡Guardado exitosamente!")
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
-
-# PANTALLA 2: CUENTAS
-elif menu == "Cuentas Corrientes":
-    st.header("🔎 Estado de Cuenta")
-    if st.button("🔄 Actualizar"):
-        st.cache_data.clear()
-        
-    try:
-        df = cargar_datos()
-        if not df.empty:
-            vecino_selec = st.selectbox("Seleccionar Vecino", SOCIOS)
-            
-            # Filtros
-            df["Monto"] = pd.to_numeric(df["Monto"])
-            movs_propios = df[df["Socio"] == vecino_selec]
-            movs_generales = df[df["Socio"] == "TODOS"].copy()
-            
-            if not movs_generales.empty:
-                movs_generales["Monto"] = movs_generales["Monto"] / 20
-                movs_generales["Concepto"] = movs_generales["Concepto"].astype(str) + " (Prorrateo)"
-                
-            estado_cuenta = pd.concat([movs_propios, movs_generales]).sort_values(by="Fecha", ascending=False)
-            
-            st.dataframe(estado_cuenta[["Fecha", "Tipo", "Concepto", "Monto"]], use_container_width=True)
-            
-            ingresos = estado_cuenta[estado_cuenta["Tipo"] == "Ingreso"]["Monto"].sum()
-            egresos = estado_cuenta[estado_cuenta["Tipo"] == "Egreso"]["Monto"].sum()
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Pagado", f"${ingresos:,.0f}")
-            col2.metric("Gastos/Deuda", f"${egresos:,.0f}")
-            st.info(f"Saldo Final: ${ingresos - egresos:,.2f}")
-    except Exception as e:
-        st.error(f"Error cargando datos: {e}")
-
-# PANTALLA 3: CAJA
-elif menu == "Caja General":
-    st.header("💰 Caja")
-    if st.button("🔄 Actualizar"):
-        st.cache_data.clear()
-    try:
-        df = cargar_datos()
-        if not df.empty:
-            df["Monto"] = pd.to_numeric(df["Monto"])
-            ingresos = df[df["Tipo"] == "Ingreso"]["Monto"].sum()
-            egresos = df[df["Tipo"] == "Egreso"]["Monto"].sum()
-            st.metric("Saldo en Caja", f"$ {ingresos - egresos:,.2f}")
-            st.dataframe(df)
-    except Exception as e:
-        st.error(f"Error: {e}")
+st.balloons()
