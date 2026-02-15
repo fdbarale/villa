@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import gspread
-import json
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 
@@ -19,7 +18,7 @@ SOCIOS = [
     "S - Pathauer Carina", "S - Buss Valeria"
 ]
 
-# --- CONEXIÓN A GOOGLE SHEETS (MÉTODO INFALIBLE) ---
+# --- CONEXIÓN A GOOGLE SHEETS ---
 def conectar_google_sheet():
     # 1. Definimos permisos
     scopes = [
@@ -27,22 +26,19 @@ def conectar_google_sheet():
         "https://www.googleapis.com/auth/drive"
     ]
     
-    # 2. Leemos el bloque JSON entero desde Secrets
-    # Esto evita errores de formato en la clave privada
-    try:
-        json_content = st.secrets["service_account"]["credentials_json"]
-        creds_dict = json.loads(json_content)
-    except Exception as e:
-        st.error(f"Error leyendo credenciales: {e}")
-        st.stop()
+    # 2. Leemos las credenciales desde Secrets (como diccionario)
+    # Convertimos el objeto de Streamlit a un diccionario normal de Python
+    creds_dict = dict(st.secrets["service_account"])
     
-    # 3. Creamos las credenciales
+    # 3. LA CORRECCIÓN CLAVE PARA TU ERROR:
+    # Reemplazamos los caracteres "\n" escapados por saltos de línea reales
+    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    
+    # 4. Creamos las credenciales
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     
-    # 4. Autorizamos gspread
+    # 5. Autorizamos y conectamos
     gc = gspread.authorize(credentials)
-    
-    # 5. Abrimos la hoja por URL
     url = st.secrets["connections"]["gsheets"]["spreadsheet"]
     return gc.open_by_url(url)
 
@@ -50,10 +46,8 @@ def conectar_google_sheet():
 def cargar_datos():
     sh = conectar_google_sheet()
     try:
-        # Intenta buscar la pestaña "Movimientos"
         worksheet = sh.worksheet("Movimientos")
     except:
-        # Si no la encuentra, usa la primera hoja disponible (Plan B)
         worksheet = sh.get_worksheet(0)
     
     datos = worksheet.get_all_records()
@@ -66,25 +60,24 @@ def guardar_movimiento(fecha, tipo, categoria, socio, concepto, monto):
     except:
         worksheet = sh.get_worksheet(0)
     
-    # Preparamos la fila. El orden debe coincidir con tus columnas en Excel
+    # Preparamos la fila
     nueva_fila = [
-        fecha.strftime("%Y-%m-%d"), # Fecha
-        tipo,                        # Tipo
-        categoria,                   # Categoria
-        socio,                       # Socio
-        concepto,                    # Concepto
-        float(monto)                 # Monto
+        fecha.strftime("%Y-%m-%d"),
+        tipo,
+        categoria,
+        socio,
+        concepto,
+        float(monto)
     ]
     
-    # Agregamos la fila al final
+    # Agregamos la fila
     worksheet.append_row(nueva_fila)
-    st.cache_data.clear() # Limpiamos memoria para ver cambios al instante
+    st.cache_data.clear()
     return True
 
-# --- INTERFAZ GRÁFICA (FRONTEND) ---
+# --- INTERFAZ GRÁFICA ---
 st.title("🏡 Villa Soñada - Gestión")
 
-# Menú Lateral
 menu = st.sidebar.radio("Navegación", ["Cargar Movimiento", "Cuentas Corrientes", "Caja General"])
 
 # PANTALLA 1: CARGA
@@ -105,7 +98,6 @@ if menu == "Cargar Movimiento":
                 categoria = "Particular"
                 concepto_def = "Expensas"
             else:
-                # Es Gasto
                 destino = st.radio("Afectación", ["General (Todos)", "Particular (Uno)"])
                 if destino == "Particular (Uno)":
                     socio = st.selectbox("Vecino afectado", SOCIOS)
@@ -117,86 +109,62 @@ if menu == "Cargar Movimiento":
             
         concepto = st.text_input("Concepto / Detalle", value=concepto_def)
             
-        # Botón de Guardar
         enviado = st.form_submit_button("💾 Guardar en Google Drive")
         
         if enviado:
-            with st.spinner("Guardando en la nube..."):
+            with st.spinner("Guardando..."):
                 try:
                     guardar_movimiento(fecha, "Ingreso" if "Ingreso" in tipo_operacion else "Egreso", categoria, socio, concepto, monto)
                     st.success("✅ ¡Guardado exitosamente!")
-                    st.balloons()
                 except Exception as e:
-                    st.error(f"❌ Error al guardar: {e}")
+                    st.error(f"❌ Error: {e}")
 
-# PANTALLA 2: CUENTAS CORRIENTES
+# PANTALLA 2: CUENTAS
 elif menu == "Cuentas Corrientes":
     st.header("🔎 Estado de Cuenta")
-    
-    if st.button("🔄 Actualizar datos"):
-        st.cache_data.clear()
-        
-    df = cargar_datos()
-    
-    if not df.empty:
-        vecino_selec = st.selectbox("Seleccionar Vecino", SOCIOS)
-        
-        # Filtros y Cálculos
-        # 1. Movimientos directos del vecino
-        movs_propios = df[df["Socio"] == vecino_selec].copy()
-        
-        # 2. Movimientos generales (divididos por 20)
-        movs_generales = df[df["Socio"] == "TODOS"].copy()
-        
-        if not movs_generales.empty:
-            # Aseguramos que sea número para dividir
-            movs_generales["Monto"] = pd.to_numeric(movs_generales["Monto"])
-            movs_generales["Monto"] = movs_generales["Monto"] / 20
-            movs_generales["Concepto"] = movs_generales["Concepto"].astype(str) + " (Prorrateo)"
-            
-        # Unimos ambas tablas
-        estado_cuenta = pd.concat([movs_propios, movs_generales])
-        
-        if not estado_cuenta.empty:
-            estado_cuenta = estado_cuenta.sort_values(by="Fecha", ascending=False)
-            
-            # Mostramos tabla
-            st.dataframe(estado_cuenta[["Fecha", "Tipo", "Concepto", "Monto"]], use_container_width=True)
-            
-            # Calculamos Saldo
-            ingresos = estado_cuenta[estado_cuenta["Tipo"] == "Ingreso"]["Monto"].sum()
-            egresos = estado_cuenta[estado_cuenta["Tipo"] == "Egreso"]["Monto"].sum()
-            saldo = ingresos - egresos
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Pagos Realizados", f"$ {ingresos:,.2f}")
-            col2.metric("Deuda/Gastos Asignados", f"$ {egresos:,.2f}")
-            
-            if saldo < 0:
-                st.error(f"❌ DEUDA ACTUAL: $ {saldo:,.2f}")
-            else:
-                st.success(f"✅ A FAVOR: $ {saldo:,.2f}")
-        else:
-            st.info("No hay movimientos para este vecino.")
-
-# PANTALLA 3: CAJA
-elif menu == "Caja General":
-    st.header("💰 Caja del Consorcio")
     if st.button("🔄 Actualizar"):
         st.cache_data.clear()
         
-    df = cargar_datos()
-    if not df.empty:
-        # Convertir a números por seguridad
-        df["Monto"] = pd.to_numeric(df["Monto"])
-        
-        ingresos_totales = df[df["Tipo"] == "Ingreso"]["Monto"].sum()
-        gastos_totales = df[df["Tipo"] == "Egreso"]["Monto"].sum()
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total Ingresos", f"$ {ingresos_totales:,.2f}")
-        col2.metric("Total Gastos Reales", f"$ {gastos_totales:,.2f}")
-        col3.metric("Saldo en Caja", f"$ {ingresos_totales - gastos_totales:,.2f}")
-        
-        st.subheader("Últimos 10 Movimientos")
-        st.dataframe(df.tail(10).sort_values(by="Fecha", ascending=False))
+    try:
+        df = cargar_datos()
+        if not df.empty:
+            vecino_selec = st.selectbox("Seleccionar Vecino", SOCIOS)
+            
+            # Filtros
+            df["Monto"] = pd.to_numeric(df["Monto"])
+            movs_propios = df[df["Socio"] == vecino_selec]
+            movs_generales = df[df["Socio"] == "TODOS"].copy()
+            
+            if not movs_generales.empty:
+                movs_generales["Monto"] = movs_generales["Monto"] / 20
+                movs_generales["Concepto"] = movs_generales["Concepto"].astype(str) + " (Prorrateo)"
+                
+            estado_cuenta = pd.concat([movs_propios, movs_generales]).sort_values(by="Fecha", ascending=False)
+            
+            st.dataframe(estado_cuenta[["Fecha", "Tipo", "Concepto", "Monto"]], use_container_width=True)
+            
+            ingresos = estado_cuenta[estado_cuenta["Tipo"] == "Ingreso"]["Monto"].sum()
+            egresos = estado_cuenta[estado_cuenta["Tipo"] == "Egreso"]["Monto"].sum()
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Pagado", f"${ingresos:,.0f}")
+            col2.metric("Gastos/Deuda", f"${egresos:,.0f}")
+            st.info(f"Saldo Final: ${ingresos - egresos:,.2f}")
+    except Exception as e:
+        st.error(f"Error cargando datos: {e}")
+
+# PANTALLA 3: CAJA
+elif menu == "Caja General":
+    st.header("💰 Caja")
+    if st.button("🔄 Actualizar"):
+        st.cache_data.clear()
+    try:
+        df = cargar_datos()
+        if not df.empty:
+            df["Monto"] = pd.to_numeric(df["Monto"])
+            ingresos = df[df["Tipo"] == "Ingreso"]["Monto"].sum()
+            egresos = df[df["Tipo"] == "Egreso"]["Monto"].sum()
+            st.metric("Saldo en Caja", f"$ {ingresos - egresos:,.2f}")
+            st.dataframe(df)
+    except Exception as e:
+        st.error(f"Error: {e}")
