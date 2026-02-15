@@ -1,12 +1,69 @@
 import streamlit as st
 import pandas as pd
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime
-from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Gestión Villa Soñada", layout="centered")
 
-# Lista de Socios
+# --- CONEXIÓN ROBUSTA (GSPREAD) ---
+def conectar_google_sheet():
+    # Definimos los permisos que necesita el robot
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    
+    # Cargamos las credenciales desde los Secretos
+    creds_dict = dict(st.secrets["connections"]["gsheets"]["service_account"])
+    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    
+    # Autorizamos
+    gc = gspread.authorize(credentials)
+    
+    # Abrimos la hoja usando el link
+    url = st.secrets["connections"]["gsheets"]["spreadsheet"]
+    return gc.open_by_url(url)
+
+# --- FUNCIONES DE DATOS ---
+def cargar_datos():
+    sh = conectar_google_sheet()
+    try:
+        # Intenta buscar la pestaña por nombre
+        worksheet = sh.worksheet("Movimientos")
+    except:
+        # Si falla, agarra la primera (índice 0)
+        worksheet = sh.get_worksheet(0)
+    
+    # Baja todos los datos
+    datos = worksheet.get_all_records()
+    return pd.DataFrame(datos)
+
+def guardar_movimiento(fecha, tipo, categoria, socio, concepto, monto):
+    sh = conectar_google_sheet()
+    try:
+        worksheet = sh.worksheet("Movimientos")
+    except:
+        worksheet = sh.get_worksheet(0)
+    
+    # Prepara la fila nueva (una lista simple)
+    # Orden: Fecha, Tipo, Categoria, Socio, Concepto, Monto
+    nueva_fila = [
+        fecha.strftime("%Y-%m-%d"),
+        tipo,
+        categoria,
+        socio,
+        concepto,
+        float(monto)
+    ]
+    
+    # Agrega la fila al final (append_row es más seguro)
+    worksheet.append_row(nueva_fila)
+    st.cache_data.clear()
+    return True
+
+# --- LISTA DE SOCIOS ---
 SOCIOS = [
     "A - Garcia Berberena", "B - Sierra Analisa", "C - Fernandez Natalia", 
     "D - Novaretto Emiliano", "E - Calderon José Luis", "F - Rodriguez Matias", 
@@ -17,91 +74,60 @@ SOCIOS = [
     "S - Pathauer Carina", "S - Buss Valeria"
 ]
 
-# --- CONEXIÓN CON GOOGLE SHEETS ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def cargar_datos():
-    # Lee la hoja "Movimientos" y evita caché viejo
-    return conn.read(worksheet="Movimientos", ttl=0)
-
-def guardar_movimiento(fecha, tipo, categoria, socio, concepto, monto):
-    # 1. Traemos los datos actuales
-    df_actual = cargar_datos()
-    
-    # 2. Creamos la nueva fila
-    nueva_fila = pd.DataFrame([{
-        "Fecha": fecha.strftime("%Y-%m-%d"),
-        "Tipo": tipo,
-        "Categoria": categoria,
-        "Socio": socio,
-        "Concepto": concepto,
-        "Monto": float(monto)
-    }])
-    
-    # 3. Unimos (Append)
-    df_actualizado = pd.concat([df_actual, nueva_fila], ignore_index=True)
-    
-    # 4. Subimos todo a Google Sheets
-    conn.update(worksheet="Movimientos", data=df_actualizado)
-    st.cache_data.clear() # Limpiamos memoria para ver el cambio ya
-    return True
-
 # --- INTERFAZ GRÁFICA ---
-st.title("🏡 Villa Soñada - Nube")
+st.title("🏡 Villa Soñada (GSpread)")
 
-menu = st.sidebar.radio("Ir a:", ["Cargar Movimiento", "Ver Cuentas", "Resumen Caja"])
+menu = st.sidebar.radio("Menú", ["Cargar", "Cuentas", "Caja"])
 
-if menu == "Cargar Movimiento":
+if menu == "Cargar":
     st.header("📝 Nuevo Movimiento")
-    tipo = st.selectbox("Operación", ["Gasto (Salida)", "Ingreso (Cobro)"])
+    tipo = st.selectbox("Tipo", ["Gasto", "Ingreso"])
     
-    with st.form("form_carga"):
+    with st.form("carga"):
         fecha = st.date_input("Fecha", datetime.now())
-        
-        if "Ingreso" in tipo:
-            socio = st.selectbox("Vecino", SOCIOS)
-            categoria = "Particular"
+        if tipo == "Ingreso":
+            socio = st.selectbox("Socio", SOCIOS)
+            cat = "Particular"
             concepto = st.text_input("Detalle", "Expensas")
-            monto = st.number_input("Monto $", min_value=0.0, step=100.0)
         else:
-            tipo_gasto = st.radio("Destino", ["General (Todos)", "Particular (Uno)"])
-            socio = st.selectbox("Vecino", SOCIOS) if "Particular" in tipo_gasto else "TODOS"
-            categoria = "Particular" if "Particular" in tipo_gasto else "General"
+            destino = st.radio("Destino", ["General", "Particular"])
+            socio = st.selectbox("Socio", SOCIOS) if destino == "Particular" else "TODOS"
+            cat = "Particular" if destino == "Particular" else "General"
             concepto = st.text_input("Detalle", "")
-            monto = st.number_input("Monto $", min_value=0.0, step=100.0)
+            
+        monto = st.number_input("Monto", min_value=0.0, step=100.0)
+        
+        if st.form_submit_button("Guardar"):
+            try:
+                guardar_movimiento(fecha, tipo, cat, socio, concepto, monto)
+                st.success("✅ ¡Guardado con éxito!")
+            except Exception as e:
+                st.error(f"Error al guardar: {e}")
 
-        if st.form_submit_button("💾 Guardar en Drive"):
-            with st.spinner("Guardando en la nube..."):
-                guardar_movimiento(fecha, "Ingreso" if "Ingreso" in tipo else "Egreso", categoria, socio, concepto, monto)
-            st.success("¡Guardado! Revisá tu Google Sheet.")
-
-elif menu == "Ver Cuentas":
-    st.header("🔎 Cuenta Corriente")
-    vecino = st.selectbox("Vecino", SOCIOS)
-    
+elif menu == "Cuentas":
+    st.header("🔎 Ver Saldo")
+    if st.button("🔄 Actualizar Datos"):
+        st.cache_data.clear()
+        
     df = cargar_datos()
     if not df.empty:
-        # Lógica de prorrateo
+        vecino = st.selectbox("Seleccionar Vecino", SOCIOS)
+        # Filtrado simple
         df["Monto"] = pd.to_numeric(df["Monto"])
-        movs_socio = df[df["Socio"] == vecino].copy()
-        movs_gral = df[df["Socio"] == "TODOS"].copy()
+        mis_movs = df[df["Socio"] == vecino]
+        generales = df[df["Socio"] == "TODOS"].copy()
         
-        if not movs_gral.empty:
-            movs_gral["Monto"] = movs_gral["Monto"] / 20
-            movs_gral["Concepto"] += " (Prorrateo)"
-        
-        final = pd.concat([movs_socio, movs_gral]).sort_values("Fecha")
+        if not generales.empty:
+            generales["Monto"] = generales["Monto"] / 20
+            generales["Concepto"] = generales["Concepto"] + " (Prorrateo)"
+            
+        final = pd.concat([mis_movs, generales])
         st.dataframe(final)
-        
-        pagos = final[final["Tipo"] == "Ingreso"]["Monto"].sum()
-        gastos = final[final["Tipo"] == "Egreso"]["Monto"].sum()
-        st.metric("Saldo (Negativo = Deuda)", f"$ {pagos - gastos:,.2f}")
 
-elif menu == "Resumen Caja":
-    st.header("📊 Estado del Consorcio")
+elif menu == "Caja":
+    st.header("💰 Caja Total")
+    if st.button("🔄 Refrescar"):
+        st.cache_data.clear()
     df = cargar_datos()
     if not df.empty:
-        ingresos = df[df["Tipo"] == "Ingreso"]["Monto"].sum()
-        egresos = df[df["Tipo"] == "Egreso"]["Monto"].sum()
-        st.metric("Caja Real", f"$ {ingresos - egresos:,.2f}")
         st.dataframe(df)
