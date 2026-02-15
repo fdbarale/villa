@@ -17,6 +17,13 @@ def conectar_google_sheet():
     
     # Cargamos las credenciales desde los Secretos
     creds_dict = dict(st.secrets["connections"]["gsheets"]["service_account"])
+    
+    # ---------------------------------------------------------
+    # EL FIX MÁGICO: Reemplazar caracteres de escape por saltos reales
+    # Esto arregla el error "InvalidData / PEM file"
+    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    # ---------------------------------------------------------
+
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     
     # Autorizamos
@@ -25,7 +32,7 @@ def conectar_google_sheet():
     # Abrimos la hoja usando el link
     url = st.secrets["connections"]["gsheets"]["spreadsheet"]
     return gc.open_by_url(url)
-
+    
 # --- FUNCIONES DE DATOS ---
 def cargar_datos():
     sh = conectar_google_sheet()
