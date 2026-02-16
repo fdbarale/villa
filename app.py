@@ -58,10 +58,8 @@ def obtener_datos_luz_historicos(socio_seleccionado):
         df = pd.DataFrame(ws.get_all_records())
         if df.empty: return 0, 100.0
         
-        # Precio
         ultimo_precio = float(df.iloc[-1]["Precio_kWh"]) if "Precio_kWh" in df.columns else 100.0
         
-        # Lectura
         if "Socio" in df.columns:
             lec = df[df["Socio"] == socio_seleccionado]
             if not lec.empty:
@@ -73,54 +71,104 @@ def guardar_lectura_tecnica(fila):
     sh = conectar_google_sheet()
     sh.worksheet("Lecturas").append_row(fila)
 
-# --- 3. CLASE PDF ---
+# --- 3. CLASE PDF AVANZADA ---
 class PDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 15)
-        self.cell(0, 10, 'Resumen de Caja - Villa Soñada', 0, 1, 'C')
+        self.cell(0, 10, 'Administración Villa Soñada', 0, 1, 'C')
+        self.set_font('Arial', 'I', 10)
+        self.cell(0, 10, 'Informe de Caja y Estado Financiero', 0, 1, 'C')
         self.ln(5)
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
         self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
 
-def generar_pdf_caja(df, saldo_ini, mes, anio):
+def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     pdf = PDF()
     pdf.add_page()
     pdf.set_font("Arial", size=10)
-    pdf.cell(0, 10, f"Período: {mes}/{anio} | Saldo Inicial: ${saldo_ini:,.2f}", 0, 1)
     
-    # Encabezados
+    # 1. ENCABEZADO CAJA
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, f"1. MOVIMIENTOS DE CAJA (REAL) - {mes}/{anio}", 0, 1)
+    pdf.set_font("Arial", size=10)
+    pdf.cell(0, 10, f"Saldo Inicial al comenzar el mes: ${saldo_ini:,.2f}", 0, 1)
+    
+    # Tabla Caja
     pdf.set_fill_color(220, 220, 220)
-    pdf.cell(25, 10, "Fecha", 1, 0, 'C', 1)
-    pdf.cell(25, 10, "Tipo", 1, 0, 'C', 1)
-    pdf.cell(85, 10, "Concepto", 1, 0, 'C', 1)
-    pdf.cell(30, 10, "Monto", 1, 0, 'C', 1)
-    pdf.cell(30, 10, "Saldo", 1, 1, 'C', 1)
+    pdf.cell(25, 8, "Fecha", 1, 0, 'C', 1)
+    pdf.cell(85, 8, "Detalle", 1, 0, 'C', 1)
+    pdf.cell(25, 8, "Entrada", 1, 0, 'C', 1)
+    pdf.cell(25, 8, "Salida", 1, 0, 'C', 1)
+    pdf.cell(30, 8, "Saldo Parcial", 1, 1, 'C', 1)
     
     saldo = saldo_ini
-    ing = 0
-    egr = 0
+    tot_ing = 0
+    tot_egr = 0
     
+    # Filtramos: Solo Ingresos reales y Gastos Globales (SOCIEDAD_GASTOS)
+    # Excluimos las cuotas partes individuales para no ensuciar la caja
     for i, row in df.iterrows():
-        m = row["Monto"]
-        if row["Tipo"] == "Ingreso":
-            saldo += m
-            ing += m
-        else:
-            saldo -= m
-            egr += m
-            
-        pdf.cell(25, 10, row["Fecha"].strftime("%d/%m"), 1)
-        pdf.cell(25, 10, row["Tipo"], 1)
-        pdf.cell(85, 10, str(row["Concepto"])[:45], 1)
-        pdf.cell(30, 10, f"${m:,.0f}", 1, 0, 'R')
-        pdf.cell(30, 10, f"${saldo:,.0f}", 1, 1, 'R')
+        # Lógica de Caja: Entra todo cobro, sale todo gasto marcado como SOCIEDAD
+        es_gasto_real = (row["Socio"] == "SOCIEDAD_GASTOS") or (row["Categoria"] == "Gasto Real")
+        es_ingreso_real = (row["Tipo"] == "Ingreso")
         
+        if es_gasto_real or es_ingreso_real:
+            m = row["Monto"]
+            entrada = m if es_ingreso_real else 0
+            salida = m if es_gasto_real else 0
+            
+            saldo += entrada - salida
+            tot_ing += entrada
+            tot_egr += salida
+            
+            concepto = str(row["Concepto"])[:40]
+            if es_ingreso_real: concepto = f"Pago: {row['Socio']} ({concepto})"
+            
+            pdf.cell(25, 8, row["Fecha"].strftime("%d/%m"), 1)
+            pdf.cell(85, 8, concepto, 1)
+            pdf.cell(25, 8, f"${entrada:,.0f}" if entrada > 0 else "-", 1, 0, 'R')
+            pdf.cell(25, 8, f"${salida:,.0f}" if salida > 0 else "-", 1, 0, 'R')
+            pdf.cell(30, 8, f"${saldo:,.0f}", 1, 1, 'R')
+
     pdf.ln(5)
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 10, f"TOTAL INGRESOS: ${tot_ing:,.2f} | TOTAL GASTOS: ${tot_egr:,.2f}", 0, 1)
+    pdf.cell(0, 10, f"SALDO CIERRE DE CAJA: ${saldo:,.2f}", 0, 1)
+    pdf.ln(10)
+
+    # 2. LISTADO DE DEUDORES
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, f"Ingresos: ${ing:,.2f} | Egresos: ${egr:,.2f}", 0, 1)
-    pdf.cell(0, 10, f"SALDO CIERRE: ${saldo:,.2f}", 0, 1)
+    pdf.cell(0, 10, f"2. ESTADO DE DEUDAS (Al cierre del reporte)", 0, 1)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(80, 8, "Socio / Vecino", 1, 0, 'C', 1)
+    pdf.cell(40, 8, "Saldo a Favor", 1, 0, 'C', 1)
+    pdf.cell(40, 8, "Deuda Total", 1, 1, 'C', 1)
+    
+    pdf.set_font("Arial", size=10)
+    
+    # Recalculamos saldos históricos totales de TODOS los movimientos para ver deuda actual
+    df_full = cargar_movimientos() # Cargamos todo sin filtro de fecha para ver la deuda real
+    
+    hay_deuda = False
+    for vecino in lista_socios:
+        movs = df_full[df_full["Socio"] == vecino]
+        ing = movs[movs["Tipo"] == "Ingreso"]["Monto"].sum()
+        egr = movs[movs["Tipo"] == "Egreso"]["Monto"].sum()
+        saldo_vecino = ing - egr
+        
+        if saldo_vecino < -100: # Tolerancia $100
+            hay_deuda = True
+            pdf.set_text_color(180, 0, 0) # Rojo
+            pdf.cell(80, 8, vecino, 1)
+            pdf.cell(40, 8, "-", 1, 0, 'C')
+            pdf.cell(40, 8, f"${abs(saldo_vecino):,.2f}", 1, 1, 'R')
+            pdf.set_text_color(0, 0, 0)
+    
+    if not hay_deuda:
+        pdf.cell(160, 8, "¡Felicitaciones! No hay deudas registradas.", 1, 1, 'C')
+        
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 4. INTERFAZ ---
@@ -132,91 +180,108 @@ st.sidebar.header("📅 Filtro de Fecha")
 mes_selec = st.sidebar.selectbox("Mes", range(1, 13), index=datetime.now().month - 1)
 anio_selec = st.sidebar.number_input("Año", value=datetime.now().year)
 
-# Fechas límite
 f_ini = datetime(anio_selec, mes_selec, 1)
 if mes_selec == 12: f_fin = datetime(anio_selec + 1, 1, 1)
 else: f_fin = datetime(anio_selec, mes_selec + 1, 1)
 
-menu = st.sidebar.radio("Menú:", ["1. 📝 Cargar", "2. ⚡ Luz", "3. 🔍 Cuentas", "4. 📲 WhatsApp", "5. 📄 PDF Caja"])
+menu = st.sidebar.radio("Menú:", ["1. 📝 Cargar", "2. ⚡ Luz", "3. 🔍 Cuentas", "4. 📲 WhatsApp", "5. 📄 PDF Mensual"])
 
-# --- LÓGICA DE CARGA CORREGIDA ---
+# --- MÓDULO 1: CARGA (SIN FORMULARIO / SIN ENTER AUTOMÁTICO) ---
 if menu == "1. 📝 Cargar":
     st.header("Nueva Operación")
     
-    # 1. PARTE INTERACTIVA (FUERA DEL FORMULARIO)
-    # Esto permite que al cambiar "Particular", aparezca el socio AL INSTANTE.
+    # Inputs directos (No st.form, para evitar que Enter envíe)
     col1, col2 = st.columns(2)
     fecha_op = col1.date_input("Fecha", datetime.now())
     tipo_op = col2.selectbox("Tipo", ["Gasto (Salida)", "Ingreso (Cobro)"])
     
-    socio_final = "TODOS" # Valor por defecto
+    socio_final = "TODOS"
     destino_final = "General"
-    monto_prorrateado = 0
     
+    # Lógica de selectores condicionales
     if tipo_op == "Ingreso (Cobro)":
         socio_final = st.selectbox("¿Quién paga?", lista_nombres)
         destino_final = "Particular"
     else:
-        # Es Gasto
-        destino_select = st.radio("Destino del Gasto", ["General (Todos)", "Particular (Uno)"], horizontal=True)
-        if "Particular" in destino_select:
-            socio_final = st.selectbox("Seleccionar Vecino Afectado", lista_nombres)
+        # Gasto
+        modo_gasto = st.radio("Destino", ["General (Sociedad)", "Particular (Vecino)"], horizontal=True)
+        if "Particular" in modo_gasto:
+            socio_final = st.selectbox("Vecino Afectado", lista_nombres)
             destino_final = "Particular"
         else:
             destino_final = "General"
-            cant = len(lista_nombres)
-            st.info(f"ℹ️ Se dividirá entre {cant} socios.")
+            st.info(f"ℹ️ Esto generará:\n1. Un egreso en la Caja de la Sociedad.\n2. Una deuda dividida entre {len(lista_nombres)} vecinos.")
 
-    # 2. PARTE ESTÁTICA (DENTRO DEL FORMULARIO)
-    # Aquí cargamos montos y conceptos sin que se recargue la página
-    with st.form("form_carga"):
-        c1, c2 = st.columns(2)
-        monto = c1.number_input("Monto Total ($)", min_value=0.0, step=100.0)
-        concepto = c2.text_input("Concepto / Detalle")
-        
-        submitted = st.form_submit_button("💾 Guardar Operación")
-        
-        if submitted:
+    c1, c2 = st.columns(2)
+    monto = c1.number_input("Monto Total ($)", min_value=0.0, step=100.0)
+    concepto = c2.text_input("Concepto / Detalle")
+    
+    st.write("---")
+    
+    # Botón único de guardado
+    if st.button("💾 CONFIRMAR Y GUARDAR"):
+        if monto <= 0:
+            st.error("El monto debe ser mayor a 0")
+        else:
             hoy_str = fecha_op.strftime("%Y-%m-%d")
             filas = []
             
+            # --- LÓGICA DE DOBLE IMPUTACIÓN ---
             if destino_final == "General" and tipo_op == "Gasto (Salida)":
-                # Prorrateo
+                # 1. Asiento en la CAJA (Para el PDF de la Sociedad)
+                # Usamos un socio ficticio "SOCIEDAD_GASTOS" para identificar salida de caja real
+                filas.append([hoy_str, "Egreso", "Gasto Real", "SOCIEDAD_GASTOS", concepto, monto])
+                
+                # 2. Asiento en los VECINOS (Generación de Deuda)
                 cant = len(lista_nombres)
                 indiv = monto / cant if cant > 0 else 0
                 for v in lista_nombres:
-                    filas.append([hoy_str, "Egreso", "General Prorrateado", v, f"{concepto}", indiv])
+                    filas.append([hoy_str, "Egreso", "Cuota Parte", v, f"Parte de: {concepto}", indiv])
+                    
+                st.success(f"✅ Se registró el gasto de ${monto} en la caja y se dividió en cuotas de ${indiv:,.2f}")
+
             else:
-                # Individual
+                # Carga Simple (Ingreso o Gasto Particular)
                 t_real = "Ingreso" if "Ingreso" in tipo_op else "Egreso"
                 filas.append([hoy_str, t_real, destino_final, socio_final, concepto, monto])
+                st.success("✅ Operación particular guardada.")
             
             guardar_lote_movimientos(filas)
-            st.success("✅ Guardado correctamente.")
 
+# --- MÓDULO 2: LUZ (SIN FORMULARIO) ---
 elif menu == "2. ⚡ Luz":
     st.header("Carga de Luz")
     socio = st.selectbox("Vecino", lista_nombres)
-    with st.spinner("Buscando historial..."):
-        ant_sug, pr_sug = obtener_datos_luz_historicos(socio)
-    st.info(f"Lectura anterior: {ant_sug}")
     
-    with st.form("luz"):
-        c1, c2 = st.columns(2)
-        ant = c1.number_input("Anterior", value=int(ant_sug))
-        act = c2.number_input("Actual", min_value=int(ant_sug))
-        pr = st.number_input("Precio kWh", value=float(pr_sug))
-        
-        cons = act - ant
-        tot = cons * pr
-        st.metric("A Pagar", f"${tot:,.2f}")
-        
-        if st.form_submit_button("Guardar"):
-            hoy = datetime.now().strftime("%Y-%m-%d")
-            guardar_lectura_tecnica([hoy, socio, ant, act, cons, pr, tot])
-            guardar_lote_movimientos([[hoy, "Egreso", "Luz", socio, f"Luz {cons}kw", tot]])
-            st.success("✅ Cargado.")
+    # Botón para buscar (para que no busque en cada recarga)
+    if 'luz_sug' not in st.session_state: st.session_state.luz_sug = 0
+    
+    if st.button("🔍 Buscar Lectura Anterior"):
+        ant, pr = obtener_datos_luz_historicos(socio)
+        st.session_state.luz_ant_val = int(ant)
+        st.session_state.luz_pr_val = float(pr)
+        st.rerun()
 
+    c1, c2 = st.columns(2)
+    # Usamos valores de session_state si existen, sino 0
+    val_ant = st.session_state.get('luz_ant_val', 0)
+    val_pr = st.session_state.get('luz_pr_val', 100.0)
+    
+    ant = c1.number_input("Anterior", value=val_ant)
+    act = c2.number_input("Actual", min_value=val_ant)
+    pr = st.number_input("Precio kWh", value=val_pr)
+    
+    cons = act - ant
+    tot = cons * pr
+    st.metric("A Pagar", f"${tot:,.2f}")
+    
+    if st.button("💾 Guardar Luz"):
+        hoy = datetime.now().strftime("%Y-%m-%d")
+        guardar_lectura_tecnica([hoy, socio, ant, act, cons, pr, tot])
+        guardar_lote_movimientos([[hoy, "Egreso", "Luz", socio, f"Luz {cons}kw", tot]])
+        st.success("✅ Cargado.")
+
+# --- MÓDULO 3: CUENTAS ---
 elif menu == "3. 🔍 Cuentas":
     st.subheader(f"Movimientos: {mes_selec}/{anio_selec}")
     df = cargar_movimientos()
@@ -224,12 +289,11 @@ elif menu == "3. 🔍 Cuentas":
         vecino = st.selectbox("Vecino", lista_nombres)
         df_v = df[df["Socio"] == vecino]
         
-        # Saldo Anterior
+        # Filtros de fecha
         mask_ant = df_v["Fecha"] < f_ini
         df_ant = df_v[mask_ant]
         sal_ant = df_ant[df_ant["Tipo"]=="Ingreso"]["Monto"].sum() - df_ant[df_ant["Tipo"]=="Egreso"]["Monto"].sum()
         
-        # Mes
         mask_mes = (df_v["Fecha"] >= f_ini) & (df_v["Fecha"] < f_fin)
         df_mes = df_v[mask_mes].sort_values("Fecha")
         
@@ -244,21 +308,20 @@ elif menu == "3. 🔍 Cuentas":
         
         st.dataframe(df_mes[["Fecha", "Concepto", "Tipo", "Monto"]], use_container_width=True)
 
+# --- MÓDULO 4: WHATSAPP ---
 elif menu == "4. 📲 WhatsApp":
-    st.header("Enviar Resumen por WhatsApp")
+    st.header("Enviar Resumen")
     df = cargar_movimientos()
     if not df.empty:
         vecino = st.selectbox("Vecino", lista_nombres)
-        
-        # Calculo exacto igual a Cuentas
         df_v = df[df["Socio"] == vecino]
+        
         mask_ant = df_v["Fecha"] < f_ini
         sal_ant = df_v[mask_ant & (df_v["Tipo"]=="Ingreso")]["Monto"].sum() - df_v[mask_ant & (df_v["Tipo"]=="Egreso")]["Monto"].sum()
         
         mask_mes = (df_v["Fecha"] >= f_ini) & (df_v["Fecha"] < f_fin)
         df_mes = df_v[mask_mes].sort_values("Fecha")
         
-        # Armado de texto
         txt = f"*RESUMEN {mes_selec}/{anio_selec}*\nVecino: {vecino}\n"
         txt += f"Saldo Anterior: ${sal_ant:,.2f}\n----------------\n"
         sal_temp = sal_ant
@@ -267,34 +330,47 @@ elif menu == "4. 📲 WhatsApp":
             m = r["Monto"]
             if r["Tipo"]=="Ingreso": sal_temp+=m
             else: sal_temp-=m
-            txt += f"{r['Fecha'].strftime('%d/%m')} {str(r['Concepto'])[:20]}: {sig}${m:,.0f}\n"
+            txt += f"{r['Fecha'].strftime('%d/%m')} {str(r['Concepto'])[:15]}: {sig}${m:,.0f}\n"
         txt += "----------------\n"
         txt += f"*SALDO FINAL: ${sal_temp:,.2f}*"
         
-        # Link
         tel = ""
         if not df_socios_completo.empty:
             s = df_socios_completo[df_socios_completo["Nombre"] == vecino]
             if not s.empty: tel = str(s.iloc[0]["Telefono"]).replace("+", "").strip()
             
         link = f"https://wa.me/{tel}?text={urllib.parse.quote(txt)}"
-        st.text_area("Vista previa:", txt, height=200)
+        st.text_area("Mensaje:", txt, height=200)
         st.markdown(f"### 👉 [ENVIAR AHORA]({link})")
 
-elif menu == "5. 📄 PDF Caja":
-    st.header(f"Reporte Mensual: {mes_selec}/{anio_selec}")
+# --- MÓDULO 5: PDF CAJA ---
+elif menu == "5. 📄 PDF Mensual":
+    st.header(f"Informe Financiero: {mes_selec}/{anio_selec}")
+    st.info("Este informe contiene: 1. Movimientos reales de la Caja de la Sociedad. 2. Lista de vecinos con Deuda.")
+    
     df = cargar_movimientos()
     if not df.empty:
-        # Saldo Anterior General
-        mask_ant = df["Fecha"] < f_ini
-        sal_ini = df[mask_ant & (df["Tipo"]=="Ingreso")]["Monto"].sum() - df[mask_ant & (df["Tipo"]=="Egreso")]["Monto"].sum()
+        # Calcular Saldo de CAJA (No de vecinos)
+        # Filtramos solo movimientos reales: SOCIEDAD_GASTOS o INGRESOS
+        mask_caja = (df["Socio"] == "SOCIEDAD_GASTOS") | (df["Tipo"] == "Ingreso")
+        df_caja = df[mask_caja]
         
+        # Saldo Anterior de Caja
+        mask_ant = df_caja["Fecha"] < f_ini
+        ing_ant = df_caja[mask_ant & (df_caja["Tipo"]=="Ingreso")]["Monto"].sum()
+        egr_ant = df_caja[mask_ant & (df_caja["Tipo"]=="Egreso")]["Monto"].sum()
+        sal_ini_caja = ing_ant - egr_ant
+        
+        # Movimientos del mes para el PDF
         mask_mes = (df["Fecha"] >= f_ini) & (df["Fecha"] < f_fin)
-        df_mes = df[mask_mes].sort_values("Fecha")
+        df_mes_completo = df[mask_mes].sort_values("Fecha") 
         
-        if st.button("Descargar PDF"):
-            pdf_data = generar_pdf_caja(df_mes, sal_ini, mes_selec, anio_selec)
+        if st.button("🖨️ Generar Informe PDF"):
+            # Le pasamos el DF completo del mes, la función del PDF se encarga de filtrar
+            # qué mostrar en la tabla y qué mostrar en la lista de deudores
+            pdf_data = generar_pdf_caja(df_mes_completo, sal_ini_caja, mes_selec, anio_selec, lista_nombres)
+            
             b64 = base64.b64encode(pdf_data).decode()
-            href = f'<a href="data:application/octet-stream;base64,{b64}" download="Resumen_{mes_selec}_{anio_selec}.pdf">📥 DESCARGAR PDF</a>'
+            href = f'<a href="data:application/octet-stream;base64,{b64}" download="Informe_Villa_{mes_selec}_{anio_selec}.pdf">📥 DESCARGAR PDF</a>'
             st.markdown(href, unsafe_allow_html=True)
-            st.success("Generado.")
+            st.success("Informe generado exitosamente.")
