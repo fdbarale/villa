@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import urllib.parse
 from fpdf import FPDF
 import base64
@@ -24,7 +24,7 @@ def conectar_google_sheet():
         st.error(f"❌ Error de Conexión: {e}")
         st.stop()
 
-# --- 2. FUNCIONES DE BASE DE DATOS ---
+# --- 2. FUNCIONES DE DATOS ---
 def cargar_movimientos():
     sh = conectar_google_sheet()
     ws = sh.worksheet("Movimientos")
@@ -66,12 +66,13 @@ def obtener_lectura_anterior(socio):
         return int(df_s.iloc[-1]["Lectura_Act"])
     except: return 0
 
-# --- CONFIGURACIÓN (GOOGLE SHEET) ---
+# --- CONFIGURACIÓN (Lectura/Escritura en Excel) ---
 def obtener_configuracion():
     sh = conectar_google_sheet()
     try:
         ws = sh.worksheet("Configuracion")
         data = ws.get_all_records()
+        # Devuelve diccionario: {'Precio_KWH': 100, 'Inflacion_Mensual': 10}
         config = {row['Parametro']: row['Valor'] for row in data}
         return config
     except:
@@ -81,10 +82,11 @@ def guardar_configuracion(precio_kwh, inflacion):
     sh = conectar_google_sheet()
     try:
         ws = sh.worksheet("Configuracion")
+        # Asumiendo estructura fija: Fila 2 es KWH, Fila 3 es Inflacion
         ws.update_acell('B2', float(precio_kwh))
         ws.update_acell('B3', float(inflacion))
         st.cache_data.clear()
-        st.toast("✅ Configuración guardada en la Nube")
+        st.toast("✅ Configuración guardada correctamente")
     except Exception as e:
         st.error(f"Error guardando config: {e}")
 
@@ -124,7 +126,6 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     tot_egr = 0
     
     for i, row in df.iterrows():
-        # Filtro de Caja: Ingresos o Gastos Reales (Salida de dinero de la Villa)
         es_gasto_caja = (row["Socio"] == "SOCIEDAD_GASTOS") or (row["Categoria"] == "Gasto Real")
         es_ingreso = (row["Tipo"] == "Ingreso")
         
@@ -180,11 +181,8 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
 st.title("🏡 Administración Villa Soñada")
 lista_nombres, df_socios_completo = obtener_lista_socios()
 
-# --- BARRA LATERAL: CONFIGURACIÓN ---
-st.sidebar.title("⚙️ Configuración")
-
-# Fechas
-st.sidebar.subheader("📅 Período")
+# --- SELECTOR DE FECHA (Único elemento en Sidebar) ---
+st.sidebar.subheader("📅 Período de Trabajo")
 mes_selec = st.sidebar.selectbox("Mes", range(1, 13), index=datetime.now().month - 1)
 anio_selec = st.sidebar.number_input("Año", value=datetime.now().year)
 
@@ -192,31 +190,21 @@ f_ini = datetime(anio_selec, mes_selec, 1)
 if mes_selec == 12: f_fin = datetime(anio_selec + 1, 1, 1)
 else: f_fin = datetime(anio_selec, mes_selec + 1, 1)
 
-# Valores Persistentes
-st.sidebar.divider()
-st.sidebar.subheader("💰 Valores del Mes")
+# Leemos configuración al inicio para usar en toda la app
 config_actual = obtener_configuracion()
-val_kwh_db = float(config_actual.get('Precio_KWH', 100.0))
-val_inf_db = float(config_actual.get('Inflacion_Mensual', 10.0))
-
-kwh_input = st.sidebar.number_input("Precio kWh ($)", value=val_kwh_db, step=0.5)
-inf_input = st.sidebar.number_input("% Inflación", value=val_inf_db, step=0.1)
-punitorio_fijo = 5.0 
-
-if st.sidebar.button("💾 Guardar Valores"):
-    guardar_configuracion(kwh_input, inf_input)
-
-st.sidebar.info(f"Interés por Mora Total: **{inf_input + punitorio_fijo}%**")
+PRECIO_KWH = float(config_actual.get('Precio_KWH', 100.0))
+INFLACION_MENSUAL = float(config_actual.get('Inflacion_Mensual', 10.0))
 
 # --- MENÚ PRINCIPAL ---
-menu = st.sidebar.radio("Ir a:", [
+menu = st.sidebar.radio("Menú:", [
     "1. 📝 Cargar Op.", 
     "2. ⚡ Luz", 
-    "3. 📈 Ajuste Deudas", 
-    "4. ⚖️ Movimientos Especiales", # NUEVO MODULO FLEXIBLE
+    "3. 📈 Cálculo Intereses", 
+    "4. ⚖️ Movimientos Especiales", 
     "5. 🔍 Cuentas", 
     "6. 📲 WhatsApp", 
-    "7. 📄 PDF"
+    "7. 📄 PDF",
+    "8. ⚙️ Configuración"
 ])
 
 # --- MÓDULO 1: CARGA ---
@@ -249,6 +237,7 @@ if menu == "1. 📝 Cargar Op.":
     if st.button("💾 CONFIRMAR Y GUARDAR"):
         hoy_str = fecha_op.strftime("%Y-%m-%d")
         filas = []
+        
         if destino == "General" and tipo_op == "Gasto (Salida)":
             filas.append([hoy_str, "Egreso", "Gasto Real", "SOCIEDAD_GASTOS", concepto, monto])
             cuota = monto / len(lista_nombres)
@@ -259,12 +248,16 @@ if menu == "1. 📝 Cargar Op.":
             tr = "Ingreso" if "Ingreso" in tipo_op else "Egreso"
             filas.append([hoy_str, tr, destino, socio, concepto, monto])
             st.success("✅ Operación guardada.")
+            
         guardar_lote_movimientos(filas)
 
 # --- MÓDULO 2: LUZ ---
 elif menu == "2. ⚡ Luz":
     st.header("Carga de Luz")
+    st.info(f"Precio del kWh actual: **${PRECIO_KWH}** (Configurado en Menú 8)")
+    
     socio = st.selectbox("Vecino", lista_nombres)
+    
     if 'luz_ant' not in st.session_state: st.session_state.luz_ant = 0
     if st.button("🔍 Buscar Anterior"):
         st.session_state.luz_ant = obtener_lectura_anterior(socio)
@@ -272,7 +265,9 @@ elif menu == "2. ⚡ Luz":
 
     ant = st.number_input("Anterior", value=st.session_state.luz_ant)
     act = st.number_input("Actual", min_value=st.session_state.luz_ant)
-    pr = st.number_input("Precio kWh (Config)", value=kwh_input, disabled=False)
+    
+    # Input deshabilitado visualmente, toma valor de config
+    pr = st.number_input("Precio kWh", value=PRECIO_KWH, disabled=True)
     
     cons = act - ant
     tot = cons * pr
@@ -284,99 +279,110 @@ elif menu == "2. ⚡ Luz":
         guardar_lote_movimientos([[hoy, "Egreso", "Luz", socio, f"Luz {cons}kw", tot]])
         st.success("✅ Cargado.")
 
-# --- MÓDULO 3: INTERESES ---
-elif menu == "3. 📈 Ajuste Deudas":
-    st.header("Aplicar Intereses por Mora")
-    st.info(f"Se aplicará: Inflación {inf_input}% + Punitorio {punitorio_fijo}%")
-    factor = (inf_input + punitorio_fijo) / 100
+# --- MÓDULO 3: INTERESES (LÓGICA ACTUALIZADA) ---
+elif menu == "3. 📈 Cálculo Intereses":
+    st.header("Actualización de Deuda e Intereses")
     
-    if st.button("🔍 Buscar Deudores y Calcular"):
+    # 1. Mostrar configuración actual
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Inflación Mensual", f"{INFLACION_MENSUAL}%")
+    col2.metric("Punitorio Fijo", "5.0%")
+    
+    st.markdown("""
+    **Criterio de Cálculo:**
+    1. Se toma el **Saldo Deudor** al inicio del mes (Arrastre).
+    2. Se aplica la **Inflación** sobre esa deuda.
+    3. Sobre el nuevo monto (Deuda + Inflación), se aplica el **5% Punitorio**.
+    """)
+    
+    if st.button("🔍 Calcular Saldos Negativos (Arrastre)"):
         df = cargar_movimientos()
         filas = []
         hoy = datetime.now().strftime("%Y-%m-%d")
-        hay = False
+        hay_deuda = False
+        
         st.write("---")
+        st.subheader("Simulación de Cargos:")
+        
         for v in lista_nombres:
+            # Filtramos solo movimientos ANTERIORES al mes seleccionado (Saldo de Arrastre)
             m = df[df["Socio"] == v]
-            s = m[m["Tipo"]=="Ingreso"]["Monto"].sum() - m[m["Tipo"]=="Egreso"]["Monto"].sum()
-            if s < -100:
-                hay = True
-                deuda = abs(s)
-                recargo = deuda * factor
-                st.error(f"{v}: Debe ${deuda:,.0f} -> Recargo ${recargo:,.0f}")
-                filas.append([hoy, "Egreso", "Financiero", v, f"Ajuste Mora ({inf_input}%+{punitorio_fijo}%)", recargo])
-        if hay:
-            if st.button("🔥 APLICAR RECARGOS"):
-                guardar_lote_movimientos(filas)
-                st.success("✅ Intereses aplicados.")
-        else: st.success("Nadie tiene deuda vencida.")
+            m_ant = m[m["Fecha"] < f_ini]
+            
+            saldo_arrastre = m_ant[m_ant["Tipo"]=="Ingreso"]["Monto"].sum() - m_ant[m_ant["Tipo"]=="Egreso"]["Monto"].sum()
+            
+            if saldo_arrastre < -100: # Tolerancia de $100
+                hay_deuda = True
+                deuda_base = abs(saldo_arrastre)
+                
+                # --- MATEMÁTICA FINANCIERA SOLICITADA ---
+                # 1. Ajuste por Inflación
+                monto_inflacion = deuda_base * (INFLACION_MENSUAL / 100)
+                deuda_actualizada = deuda_base + monto_inflacion
+                
+                # 2. Punitorio sobre el monto actualizado
+                monto_punitorio = deuda_actualizada * 0.05
+                
+                # 3. Total a cargar
+                total_recargo = monto_inflacion + monto_punitorio
+                
+                # Mostrar en pantalla
+                st.error(f"👤 **{v}**")
+                st.write(f"- Deuda Inicial: ${deuda_base:,.2f}")
+                st.write(f"- Inflación ({INFLACION_MENSUAL}%): +${monto_inflacion:,.2f}")
+                st.write(f"- Punitorio (5% s/actualizado): +${monto_punitorio:,.2f}")
+                st.write(f"- **TOTAL A AGREGAR: ${total_recargo:,.2f}**")
+                
+                filas.append([
+                    hoy, "Egreso", "Financiero", v, 
+                    f"Act. Deuda (Inf {INFLACION_MENSUAL}% + Pun 5%)", total_recargo
+                ])
+                st.divider()
 
-# --- MÓDULO 4: ESPECIALES (NUEVO) ---
+        if hay_deuda:
+            if st.button("🔥 CONFIRMAR Y APLICAR A TODOS"):
+                guardar_lote_movimientos(filas)
+                st.balloons()
+                st.success("✅ Se han actualizado las deudas exitosamente.")
+        else:
+            st.success("👏 No hay vecinos con saldo negativo arrastrado del mes anterior.")
+
+# --- MÓDULO 4: ESPECIALES ---
 elif menu == "4. ⚖️ Movimientos Especiales":
     st.header("Operaciones Contables Avanzadas")
-    
     tab1, tab2 = st.tabs(["Créditos (Socio presta)", "Gastos a Grupo (Sociedad paga)"])
     
-    # CASO 1: SOCIO PRESTA A LA SOCIEDAD
     with tab1:
-        st.subheader("Créditos Especiales")
-        st.markdown("Un socio pone dinero o realiza un trabajo. La sociedad le debe plata (Crédito) y el costo se divide entre todos.")
-        
-        socios_acreedores = st.multiselect("¿A quiénes se les acredita el dinero?", lista_nombres, key="cred_soc")
-        monto_cred = st.number_input("Monto Total del Crédito ($)", min_value=0.0, step=100.0, key="m_cred")
-        det_cred = st.text_input("Detalle (Ej: Compra Alambrados / Prestamo)", key="d_cred")
-        
-        if st.button("💾 Ejecutar Crédito"):
-            if not socios_acreedores or monto_cred <= 0:
-                st.error("Faltan datos.")
-            else:
-                hoy = datetime.now().strftime("%Y-%m-%d")
-                filas = []
-                
-                # A. El Gasto lo asume la Sociedad (Todos)
-                # Registro en Caja (Salida figurativa o Gasto devengado)
-                # NOTA: Si el socio compró materiales, la plata NO salió de la caja de la sociedad, salió del socio.
-                # Por ende, NO hacemos asiento de "Gasto Real" en SOCIEDAD_GASTOS si no hubo movimiento de efectivo de la caja.
-                # Solo distribuimos la deuda.
-                
-                cuota_todos = monto_cred / len(lista_nombres)
-                for v in lista_nombres:
-                    filas.append([hoy, "Egreso", "Cuota Parte", v, f"Gasto: {det_cred}", cuota_todos])
-                
-                # B. Se le devuelve al Socio (Ingreso a su cuenta)
-                div_credito = monto_cred / len(socios_acreedores)
-                for acreedor in socios_acreedores:
-                    filas.append([hoy, "Ingreso", "Crédito Especial", acreedor, f"Devolución: {det_cred}", div_credito])
-                
-                guardar_lote_movimientos(filas)
-                st.success(f"✅ Se generó deuda a todos y se acreditó ${monto_cred} a los seleccionados.")
+        st.subheader("Crédito a Socios")
+        socios_acreedores = st.multiselect("¿A quiénes se acredita?", lista_nombres)
+        monto_cred = st.number_input("Monto Crédito ($)", min_value=0.0, step=100.0)
+        det_cred = st.text_input("Detalle Crédito")
+        if st.button("Ejecutar Crédito"):
+            hoy = datetime.now().strftime("%Y-%m-%d")
+            filas = []
+            cuota_todos = monto_cred / len(lista_nombres)
+            for v in lista_nombres:
+                filas.append([hoy, "Egreso", "Cuota Parte", v, f"Gasto: {det_cred}", cuota_todos])
+            div_credito = monto_cred / len(socios_acreedores)
+            for acreedor in socios_acreedores:
+                filas.append([hoy, "Ingreso", "Crédito Especial", acreedor, f"Devolución: {det_cred}", div_credito])
+            guardar_lote_movimientos(filas)
+            st.success("✅ Hecho.")
 
-    # CASO 2: SOCIEDAD PAGA POR UN GRUPO
     with tab2:
-        st.subheader("Gastos de Grupo Específico")
-        st.markdown("La Caja paga algo, pero solo se le cobra a ciertos vecinos (no a todos).")
-        
-        socios_deudores = st.multiselect("¿A quiénes se les cobra?", lista_nombres, key="gasto_soc")
-        monto_gasto = st.number_input("Monto Total que pagó la Sociedad ($)", min_value=0.0, step=100.0, key="m_gasto")
-        det_gasto = st.text_input("Detalle (Ej: Arreglo Caño Vecinal)", key="d_gasto")
-        
-        if st.button("💾 Ejecutar Cobro a Grupo"):
-            if not socios_deudores or monto_gasto <= 0:
-                st.error("Faltan datos.")
-            else:
-                hoy = datetime.now().strftime("%Y-%m-%d")
-                filas = []
-                
-                # A. Salida de Caja Real (La sociedad puso la plata)
-                filas.append([hoy, "Egreso", "Gasto Real", "SOCIEDAD_GASTOS", f"Adelanto: {det_gasto}", monto_gasto])
-                
-                # B. Se le cobra SOLO a los elegidos
-                cuota_grupo = monto_gasto / len(socios_deudores)
-                for deudor in socios_deudores:
-                    filas.append([hoy, "Egreso", "Particular", deudor, f"Cobro: {det_gasto}", cuota_grupo])
-                
-                guardar_lote_movimientos(filas)
-                st.success(f"✅ Se descontaron ${monto_gasto} de Caja y se cargó a los {len(socios_deudores)} vecinos.")
+        st.subheader("Gastos de Grupo")
+        socios_deudores = st.multiselect("¿A quiénes se cobra?", lista_nombres)
+        monto_gasto = st.number_input("Monto Gasto ($)", min_value=0.0, step=100.0)
+        det_gasto = st.text_input("Detalle Gasto")
+        if st.button("Ejecutar Cobro"):
+            hoy = datetime.now().strftime("%Y-%m-%d")
+            filas = []
+            filas.append([hoy, "Egreso", "Gasto Real", "SOCIEDAD_GASTOS", f"Adelanto: {det_gasto}", monto_gasto])
+            cuota_grupo = monto_gasto / len(socios_deudores)
+            for deudor in socios_deudores:
+                filas.append([hoy, "Egreso", "Particular", deudor, f"Cobro: {det_gasto}", cuota_grupo])
+            guardar_lote_movimientos(filas)
+            st.success("✅ Hecho.")
 
 # --- MÓDULO 5: CUENTAS ---
 elif menu == "5. 🔍 Cuentas":
@@ -430,16 +436,33 @@ elif menu == "6. 📲 WhatsApp":
 elif menu == "7. 📄 PDF":
     st.header(f"Informe Financiero: {mes_selec}/{anio_selec}")
     df = cargar_movimientos()
-    if not df.empty:
+    if st.button("🖨️ Generar PDF"):
         mask_caja = (df["Socio"] == "SOCIEDAD_GASTOS") | (df["Tipo"] == "Ingreso")
         df_caja = df[mask_caja]
         mask_ant = df_caja["Fecha"] < f_ini
         sal_ini = df_caja[mask_ant & (df_caja["Tipo"]=="Ingreso")]["Monto"].sum() - df_caja[mask_ant & (df_caja["Tipo"]=="Egreso")]["Monto"].sum()
         mask_mes = (df["Fecha"] >= f_ini) & (df["Fecha"] < f_fin)
         df_mes_completo = df[mask_mes].sort_values("Fecha")
-        if st.button("🖨️ Generar PDF"):
-            pdf_data = generar_pdf_caja(df_mes_completo, sal_ini, mes_selec, anio_selec, lista_nombres)
-            b64 = base64.b64encode(pdf_data).decode()
-            href = f'<a href="data:application/octet-stream;base64,{b64}" download="Informe_Villa_{mes_selec}_{anio_selec}.pdf">📥 DESCARGAR PDF</a>'
-            st.markdown(href, unsafe_allow_html=True)
-            st.success("Generado.")
+        pdf_data = generar_pdf_caja(df_mes_completo, sal_ini, mes_selec, anio_selec, lista_nombres)
+        b64 = base64.b64encode(pdf_data).decode()
+        href = f'<a href="data:application/octet-stream;base64,{b64}" download="Informe_Villa_{mes_selec}_{anio_selec}.pdf">📥 DESCARGAR PDF</a>'
+        st.markdown(href, unsafe_allow_html=True)
+
+# --- MÓDULO 8: CONFIGURACIÓN (NUEVO) ---
+elif menu == "8. ⚙️ Configuración":
+    st.header("Configuración de Valores")
+    st.info("Estos valores quedan guardados para todo el sistema.")
+    
+    c1, c2 = st.columns(2)
+    new_kwh = c1.number_input("Precio del kWh ($)", value=PRECIO_KWH, step=0.5)
+    new_inf = c2.number_input("Inflación Mensual (%)", value=INFLACION_MENSUAL, step=0.1)
+    
+    st.write("---")
+    st.write(f"**Resumen de Intereses:**")
+    st.write(f"- Inflación Base: {new_inf}%")
+    st.write(f"- Punitorio Fijo: 5.0%")
+    st.write(f"- **Total Aplicable:** Inflación + 5% sobre el total actualizado.")
+    
+    if st.button("💾 Guardar Nueva Configuración"):
+        guardar_configuracion(new_kwh, new_inf)
+        st.rerun()
