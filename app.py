@@ -66,13 +66,12 @@ def obtener_lectura_anterior(socio):
         return int(df_s.iloc[-1]["Lectura_Act"])
     except: return 0
 
-# --- CONFIGURACIÓN (Lectura/Escritura en Excel) ---
+# --- CONFIGURACIÓN ---
 def obtener_configuracion():
     sh = conectar_google_sheet()
     try:
         ws = sh.worksheet("Configuracion")
         data = ws.get_all_records()
-        # Devuelve diccionario: {'Precio_KWH': 100, 'Inflacion_Mensual': 10}
         config = {row['Parametro']: row['Valor'] for row in data}
         return config
     except:
@@ -82,7 +81,6 @@ def guardar_configuracion(precio_kwh, inflacion):
     sh = conectar_google_sheet()
     try:
         ws = sh.worksheet("Configuracion")
-        # Asumiendo estructura fija: Fila 2 es KWH, Fila 3 es Inflacion
         ws.update_acell('B2', float(precio_kwh))
         ws.update_acell('B3', float(inflacion))
         st.cache_data.clear()
@@ -108,7 +106,7 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     pdf.add_page()
     pdf.set_font("Arial", size=10)
     
-    # CAJA GENERAL
+    # CAJA
     pdf.set_font("Arial", 'B', 11)
     pdf.cell(0, 10, f"1. MOVIMIENTOS REALES (CAJA) - {mes}/{anio}", 0, 1)
     pdf.set_font("Arial", size=9)
@@ -181,7 +179,7 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
 st.title("🏡 Administración Villa Soñada")
 lista_nombres, df_socios_completo = obtener_lista_socios()
 
-# --- SELECTOR DE FECHA (Único elemento en Sidebar) ---
+# --- SELECTOR DE FECHA ---
 st.sidebar.subheader("📅 Período de Trabajo")
 mes_selec = st.sidebar.selectbox("Mes", range(1, 13), index=datetime.now().month - 1)
 anio_selec = st.sidebar.number_input("Año", value=datetime.now().year)
@@ -190,7 +188,7 @@ f_ini = datetime(anio_selec, mes_selec, 1)
 if mes_selec == 12: f_fin = datetime(anio_selec + 1, 1, 1)
 else: f_fin = datetime(anio_selec, mes_selec + 1, 1)
 
-# Leemos configuración al inicio para usar en toda la app
+# Configuración Inicial
 config_actual = obtener_configuracion()
 PRECIO_KWH = float(config_actual.get('Precio_KWH', 100.0))
 INFLACION_MENSUAL = float(config_actual.get('Inflacion_Mensual', 10.0))
@@ -266,7 +264,6 @@ elif menu == "2. ⚡ Luz":
     ant = st.number_input("Anterior", value=st.session_state.luz_ant)
     act = st.number_input("Actual", min_value=st.session_state.luz_ant)
     
-    # Input deshabilitado visualmente, toma valor de config
     pr = st.number_input("Precio kWh", value=PRECIO_KWH, disabled=True)
     
     cons = act - ant
@@ -279,73 +276,73 @@ elif menu == "2. ⚡ Luz":
         guardar_lote_movimientos([[hoy, "Egreso", "Luz", socio, f"Luz {cons}kw", tot]])
         st.success("✅ Cargado.")
 
-# --- MÓDULO 3: INTERESES (LÓGICA ACTUALIZADA) ---
+# --- MÓDULO 3: INTERESES (CON MEMORIA DE SESIÓN) ---
 elif menu == "3. 📈 Cálculo Intereses":
     st.header("Actualización de Deuda e Intereses")
     
-    # 1. Mostrar configuración actual
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     col1.metric("Inflación Mensual", f"{INFLACION_MENSUAL}%")
     col2.metric("Punitorio Fijo", "5.0%")
     
-    st.markdown("""
-    **Criterio de Cálculo:**
-    1. Se toma el **Saldo Deudor** al inicio del mes (Arrastre).
-    2. Se aplica la **Inflación** sobre esa deuda.
-    3. Sobre el nuevo monto (Deuda + Inflación), se aplica el **5% Punitorio**.
-    """)
+    # Inicializamos la memoria de intereses si no existe
+    if 'filas_intereses' not in st.session_state:
+        st.session_state.filas_intereses = []
     
-    if st.button("🔍 Calcular Saldos Negativos (Arrastre)"):
+    if st.button("🔍 1. Calcular Saldos Negativos (Arrastre)"):
         df = cargar_movimientos()
-        filas = []
+        filas_temp = []
         hoy = datetime.now().strftime("%Y-%m-%d")
-        hay_deuda = False
+        
+        st.session_state.filas_intereses = [] # Limpiamos cálculo anterior
         
         st.write("---")
-        st.subheader("Simulación de Cargos:")
+        st.subheader("Resultados del Cálculo:")
+        
+        hay_deuda = False
         
         for v in lista_nombres:
-            # Filtramos solo movimientos ANTERIORES al mes seleccionado (Saldo de Arrastre)
+            # Filtro: Saldos ANTERIORES al mes actual (Arrastre)
             m = df[df["Socio"] == v]
             m_ant = m[m["Fecha"] < f_ini]
             
             saldo_arrastre = m_ant[m_ant["Tipo"]=="Ingreso"]["Monto"].sum() - m_ant[m_ant["Tipo"]=="Egreso"]["Monto"].sum()
             
-            if saldo_arrastre < -100: # Tolerancia de $100
+            if saldo_arrastre < -100: # Tolerancia
                 hay_deuda = True
                 deuda_base = abs(saldo_arrastre)
                 
-                # --- MATEMÁTICA FINANCIERA SOLICITADA ---
-                # 1. Ajuste por Inflación
-                monto_inflacion = deuda_base * (INFLACION_MENSUAL / 100)
-                deuda_actualizada = deuda_base + monto_inflacion
+                # MATEMÁTICA: (Deuda + Inf) + 5%
+                monto_inf = deuda_base * (INFLACION_MENSUAL / 100)
+                subtotal = deuda_base + monto_inf
+                monto_pun = subtotal * 0.05
+                total_recargo = monto_inf + monto_pun
                 
-                # 2. Punitorio sobre el monto actualizado
-                monto_punitorio = deuda_actualizada * 0.05
-                
-                # 3. Total a cargar
-                total_recargo = monto_inflacion + monto_punitorio
-                
-                # Mostrar en pantalla
-                st.error(f"👤 **{v}**")
-                st.write(f"- Deuda Inicial: ${deuda_base:,.2f}")
-                st.write(f"- Inflación ({INFLACION_MENSUAL}%): +${monto_inflacion:,.2f}")
-                st.write(f"- Punitorio (5% s/actualizado): +${monto_punitorio:,.2f}")
-                st.write(f"- **TOTAL A AGREGAR: ${total_recargo:,.2f}**")
-                
-                filas.append([
+                # Guardamos en la lista temporal
+                filas_temp.append([
                     hoy, "Egreso", "Financiero", v, 
-                    f"Act. Deuda (Inf {INFLACION_MENSUAL}% + Pun 5%)", total_recargo
+                    f"Ajuste Mora (Inf {INFLACION_MENSUAL}% + Pun 5%)", total_recargo
                 ])
-                st.divider()
-
+                
+                st.error(f"{v}: Deuda ${deuda_base:,.2f} -> Agrega ${total_recargo:,.2f}")
+        
+        # Guardamos en sesión
         if hay_deuda:
-            if st.button("🔥 CONFIRMAR Y APLICAR A TODOS"):
-                guardar_lote_movimientos(filas)
-                st.balloons()
-                st.success("✅ Se han actualizado las deudas exitosamente.")
+            st.session_state.filas_intereses = filas_temp
+            st.success("✅ Cálculo realizado. Revisá arriba y confirmá abajo.")
         else:
-            st.success("👏 No hay vecinos con saldo negativo arrastrado del mes anterior.")
+            st.info("No hay deudas vencidas para ajustar.")
+
+    # Botón de guardar (Solo aparece si hay datos en memoria)
+    if len(st.session_state.filas_intereses) > 0:
+        st.write("---")
+        st.warning(f"Se van a generar {len(st.session_state.filas_intereses)} movimientos de ajuste.")
+        
+        if st.button("🔥 2. CONFIRMAR Y GUARDAR INTERESES"):
+            guardar_lote_movimientos(st.session_state.filas_intereses)
+            st.balloons()
+            st.success("✅ Intereses guardados correctamente en las Cuentas Corrientes.")
+            # Limpiamos la memoria
+            st.session_state.filas_intereses = []
 
 # --- MÓDULO 4: ESPECIALES ---
 elif menu == "4. ⚖️ Movimientos Especiales":
@@ -448,7 +445,7 @@ elif menu == "7. 📄 PDF":
         href = f'<a href="data:application/octet-stream;base64,{b64}" download="Informe_Villa_{mes_selec}_{anio_selec}.pdf">📥 DESCARGAR PDF</a>'
         st.markdown(href, unsafe_allow_html=True)
 
-# --- MÓDULO 8: CONFIGURACIÓN (NUEVO) ---
+# --- MÓDULO 8: CONFIGURACIÓN ---
 elif menu == "8. ⚙️ Configuración":
     st.header("Configuración de Valores")
     st.info("Estos valores quedan guardados para todo el sistema.")
