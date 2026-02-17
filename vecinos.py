@@ -43,18 +43,21 @@ except:
     st.error("Error cargando la base de datos.")
     st.stop()
 
-# 2. Sistema de "Login" simple por URL o Selección
-# Esto permite que mandes un link tipo: ...app?socio=Garcia
-params = st.query_params
-vecino_preseleccionado = params.get("socio", None)
+# 2. LÓGICA DE SEGURIDAD "CANDADO" 🔒
+# Verificamos si alguien entró con el enlace mágico
+param_socio = st.query_params.get("socio", None)
 
-if vecino_preseleccionado and vecino_preseleccionado in lista_socios:
-    index_socio = lista_socios.index(vecino_preseleccionado)
+vecino = None
+
+if param_socio and param_socio in lista_socios:
+    # CASO A: Entró con enlace mágico -> BLOQUEAMOS LA VISTA
+    vecino = param_socio
+    st.success(f"👋 Hola **{vecino}**. Estás viendo tu cuenta exclusiva.")
+    # No mostramos el selectbox, así no puede cambiar de vecino
 else:
-    index_socio = 0
-
-# Selector (Por si quieren cambiar o entrar sin link)
-vecino = st.selectbox("Seleccioná tu Lote/Nombre:", lista_socios, index=index_socio)
+    # CASO B: Entró sin enlace (o nombre incorrecto) -> VISTA ABIERTA (Para el admin)
+    st.info("Modo Administrador: Seleccioná un vecino para ver.")
+    vecino = st.selectbox("Seleccioná Lote/Nombre:", lista_socios)
 
 # 3. Mostrar la Información
 if not df.empty and vecino:
@@ -77,18 +80,18 @@ if not df.empty and vecino:
         st.divider()
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.caption("Tu saldo actual es:")
-            if saldo < 0:
-                st.metric("Deuda Pendiente", f"${abs(saldo):,.2f}", delta="- Deuda", delta_color="inverse")
+            st.caption("Estado actual:")
+            if saldo < -100: # Tolerancia pequeña
+                st.metric("Saldo Pendiente", f"${abs(saldo):,.2f}", delta="- Deuda", delta_color="inverse")
                 st.error("⚠️ Tenés saldo pendiente de pago.")
             else:
-                st.metric("Saldo a Favor", f"${saldo:,.2f}", delta="Al día")
-                st.success("✅ Tu cuenta está al día. ¡Gracias!")
+                st.metric("Saldo a Favor / Al día", f"${saldo:,.2f}", delta="OK")
+                st.success("✅ Tu cuenta está al día.")
         
         with col2:
-            st.caption("Resumen Histórico")
-            st.text(f"Pagaste: ${ingresos:,.0f}")
-            st.text(f"Gastaste: ${egresos:,.0f}")
+            st.caption("Histórico Total")
+            st.text(f"Pagado: ${ingresos:,.0f}")
+            st.text(f"Cargado: ${egresos:,.0f}")
 
         # Tabla de Movimientos
         st.divider()
@@ -98,11 +101,6 @@ if not df.empty and vecino:
         df_mostrar = df_v[["Fecha", "Concepto", "Tipo", "Monto"]].copy()
         df_mostrar["Fecha"] = df_mostrar["Fecha"].dt.strftime("%d/%m/%Y")
         
-        # Colorear montos (Truco visual)
-        def color_monto(val):
-            color = 'green' if val > 0 else 'red' # Esto es logica visual, pero mejor usar la columna tipo
-            return f'color: {color}'
-
         st.dataframe(
             df_mostrar, 
             use_container_width=True,
@@ -111,4 +109,4 @@ if not df.empty and vecino:
 
 # Pie de página
 st.markdown("---")
-st.caption("Sistema de Transparencia Villa Soñada. Los datos se actualizan en vivo.")
+st.caption("Sistema de Transparencia Villa Soñada. Datos actualizados en vivo.")
