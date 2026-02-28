@@ -29,9 +29,17 @@ def cargar_movimientos():
     sh = conectar_google_sheet()
     ws = sh.worksheet("Movimientos")
     df = pd.DataFrame(ws.get_all_records())
+    
     if not df.empty:
-        df["Fecha"] = pd.to_datetime(df["Fecha"])
-        df["Monto"] = pd.to_numeric(df["Monto"])
+        # 1. Limpiamos espacios vacíos y borramos filas sin fecha
+        df = df[df["Fecha"].astype(str).str.strip() != ""]
+        # 2. Convertimos a fecha de forma SEGURA (errors='coerce' evita crasheos)
+        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+        # 3. Borramos las filas que tenían fechas inválidas
+        df = df.dropna(subset=["Fecha"])
+        # 4. Convertimos los montos asegurando que sean números
+        df["Monto"] = pd.to_numeric(df["Monto"], errors="coerce").fillna(0)
+        
     return df
 
 def obtener_lista_socios():
@@ -88,14 +96,22 @@ def guardar_configuracion(precio_kwh, inflacion):
     except Exception as e:
         st.error(f"Error guardando config: {e}")
 
-# --- 3. CLASE PDF ---
+# --- 3. CLASE PDF CON LOGO ---
 class PDF(FPDF):
     def header(self):
-        self.set_font('Arial', 'B', 14)
+        # 1. Intentamos cargar el Logo (si no existe, sigue sin romperse)
+        try:
+            self.image('logo.png', 10, 8, 30)
+        except:
+            pass 
+
+        # 2. Títulos
+        self.set_font('Arial', 'B', 15)
         self.cell(0, 10, 'Administración Villa Soñada', 0, 1, 'C')
         self.set_font('Arial', 'I', 9)
         self.cell(0, 10, 'Informe Mensual y Estado de Cuentas', 0, 1, 'C')
-        self.ln(5)
+        self.ln(15)
+        
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
@@ -110,7 +126,7 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     pdf.set_font("Arial", 'B', 11)
     pdf.cell(0, 10, f"1. MOVIMIENTOS REALES (CAJA) - {mes}/{anio}", 0, 1)
     pdf.set_font("Arial", size=9)
-    pdf.cell(0, 8, f"Saldo Inicial: ${saldo_ini:,.2f}", 0, 1)
+    pdf.cell(0, 8, f"Saldo Inicial de Caja: ${saldo_ini:,.2f}", 0, 1)
     
     pdf.set_fill_color(230, 230, 230)
     pdf.cell(20, 8, "Fecha", 1, 0, 'C', 1)
@@ -276,7 +292,7 @@ elif menu == "2. ⚡ Luz":
         guardar_lote_movimientos([[hoy, "Egreso", "Luz", socio, f"Luz {cons}kw", tot]])
         st.success("✅ Cargado.")
 
-# --- MÓDULO 3: INTERESES (CON MEMORIA DE SESIÓN) ---
+# --- MÓDULO 3: INTERESES (CÁLCULO SOBRE SALDO ACTUAL) ---
 elif menu == "3. 📈 Cálculo Intereses":
     st.header("Actualización de Deuda e Intereses")
     
@@ -284,32 +300,35 @@ elif menu == "3. 📈 Cálculo Intereses":
     col1.metric("Inflación Mensual", f"{INFLACION_MENSUAL}%")
     col2.metric("Punitorio Fijo", "5.0%")
     
-    # Inicializamos la memoria de intereses si no existe
     if 'filas_intereses' not in st.session_state:
         st.session_state.filas_intereses = []
     
-    if st.button("🔍 1. Calcular Saldos Negativos (Arrastre)"):
+    st.markdown("""
+    **Nuevo Criterio de Cálculo:**
+    1. Se toma el **Saldo Actual Total** al día de hoy (ya incluye los pagos y gastos que hayas cargado este mes).
+    2. Se aplica la **Inflación** sobre la deuda restante.
+    3. Sobre el nuevo monto (Deuda + Inflación), se aplica el **5% Punitorio**.
+    """)
+    
+    if st.button("🔍 1. Calcular sobre Saldos Negativos Actuales"):
         df = cargar_movimientos()
         filas_temp = []
         hoy = datetime.now().strftime("%Y-%m-%d")
         
-        st.session_state.filas_intereses = [] # Limpiamos cálculo anterior
+        st.session_state.filas_intereses = [] # Limpiamos
         
         st.write("---")
         st.subheader("Resultados del Cálculo:")
-        
         hay_deuda = False
         
         for v in lista_nombres:
-            # Filtro: Saldos ANTERIORES al mes actual (Arrastre)
+            # Tomamos TODOS los movimientos cargados hasta este momento exacto.
             m = df[df["Socio"] == v]
-            m_ant = m[m["Fecha"] < f_ini]
+            saldo_actual = m[m["Tipo"]=="Ingreso"]["Monto"].sum() - m[m["Tipo"]=="Egreso"]["Monto"].sum()
             
-            saldo_arrastre = m_ant[m_ant["Tipo"]=="Ingreso"]["Monto"].sum() - m_ant[m_ant["Tipo"]=="Egreso"]["Monto"].sum()
-            
-            if saldo_arrastre < -100: # Tolerancia
+            if saldo_actual < -100: # Tolerancia
                 hay_deuda = True
-                deuda_base = abs(saldo_arrastre)
+                deuda_base = abs(saldo_actual)
                 
                 # MATEMÁTICA: (Deuda + Inf) + 5%
                 monto_inf = deuda_base * (INFLACION_MENSUAL / 100)
@@ -317,22 +336,24 @@ elif menu == "3. 📈 Cálculo Intereses":
                 monto_pun = subtotal * 0.05
                 total_recargo = monto_inf + monto_pun
                 
-                # Guardamos en la lista temporal
+                st.error(f"👤 **{v}**")
+                st.write(f"- Deuda Final Actual: ${deuda_base:,.2f}")
+                st.write(f"- Inflación ({INFLACION_MENSUAL}%): +${monto_inf:,.2f}")
+                st.write(f"- Punitorio (5% s/actualizado): +${monto_pun:,.2f}")
+                st.write(f"- **TOTAL A AGREGAR: ${total_recargo:,.2f}**")
+                
                 filas_temp.append([
                     hoy, "Egreso", "Financiero", v, 
                     f"Ajuste Mora (Inf {INFLACION_MENSUAL}% + Pun 5%)", total_recargo
                 ])
-                
-                st.error(f"{v}: Deuda ${deuda_base:,.2f} -> Agrega ${total_recargo:,.2f}")
-        
-        # Guardamos en sesión
+                st.divider()
+
         if hay_deuda:
             st.session_state.filas_intereses = filas_temp
             st.success("✅ Cálculo realizado. Revisá arriba y confirmá abajo.")
         else:
-            st.info("No hay deudas vencidas para ajustar.")
+            st.info("👏 Ningún vecino registra deuda al día de hoy.")
 
-    # Botón de guardar (Solo aparece si hay datos en memoria)
     if len(st.session_state.filas_intereses) > 0:
         st.write("---")
         st.warning(f"Se van a generar {len(st.session_state.filas_intereses)} movimientos de ajuste.")
@@ -341,7 +362,6 @@ elif menu == "3. 📈 Cálculo Intereses":
             guardar_lote_movimientos(st.session_state.filas_intereses)
             st.balloons()
             st.success("✅ Intereses guardados correctamente en las Cuentas Corrientes.")
-            # Limpiamos la memoria
             st.session_state.filas_intereses = []
 
 # --- MÓDULO 4: ESPECIALES ---
@@ -404,16 +424,23 @@ elif menu == "5. 🔍 Cuentas":
 
 # --- MÓDULO 6: WHATSAPP ---
 elif menu == "6. 📲 WhatsApp":
-    st.header("Enviar Resumen")
+    st.header("Enviar Resumen por WhatsApp")
     df = cargar_movimientos()
+    
     if not df.empty:
         vecino = st.selectbox("Vecino", lista_nombres)
+        
+        # 1. Calculamos Saldos
         df_v = df[df["Socio"] == vecino]
         mask_ant = df_v["Fecha"] < f_ini
         sal_ant = df_v[mask_ant & (df_v["Tipo"]=="Ingreso")]["Monto"].sum() - df_v[mask_ant & (df_v["Tipo"]=="Egreso")]["Monto"].sum()
         mask_mes = (df_v["Fecha"] >= f_ini) & (df_v["Fecha"] < f_fin)
         df_mes = df_v[mask_mes].sort_values("Fecha")
-        txt = f"*RESUMEN {mes_selec}/{anio_selec}*\nVecino: {vecino}\nSaldo Anterior: ${sal_ant:,.2f}\n----------------\n"
+        
+        # 2. Armamos el Texto
+        txt = f"*RESUMEN {mes_selec}/{anio_selec}*\nVecino: {vecino}\n"
+        txt += f"Saldo Anterior: ${sal_ant:,.2f}\n----------------\n"
+        
         sal_temp = sal_ant
         for i, r in df_mes.iterrows():
             sig = "+" if r["Tipo"]=="Ingreso" else "-"
@@ -421,13 +448,31 @@ elif menu == "6. 📲 WhatsApp":
             if r["Tipo"]=="Ingreso": sal_temp+=m
             else: sal_temp-=m
             txt += f"{r['Fecha'].strftime('%d/%m')} {str(r['Concepto'])[:15]}: {sig}${m:,.0f}\n"
+        
         txt += f"----------------\n*SALDO FINAL: ${sal_temp:,.2f}*"
-        tel = ""
+        
+        # 3. CORRECCIÓN INTELIGENTE DE TELÉFONO
+        tel_final = ""
         if not df_socios_completo.empty:
             s = df_socios_completo[df_socios_completo["Nombre"] == vecino]
-            if not s.empty: tel = str(s.iloc[0]["Telefono"]).replace("+", "").strip()
-        link = f"https://wa.me/{tel}?text={urllib.parse.quote(txt)}"
-        st.markdown(f"### 👉 [ENVIAR WHATSAPP]({link})")
+            if not s.empty: 
+                raw_tel = str(s.iloc[0]["Telefono"]).strip()
+                clean_tel = raw_tel.replace("+", "").replace(" ", "").replace("-", "")
+                if len(clean_tel) > 0:
+                    if not clean_tel.startswith("54"):
+                        tel_final = f"549{clean_tel}"
+                    else:
+                        tel_final = clean_tel
+                else:
+                    st.warning("⚠️ Este vecino no tiene teléfono cargado en la hoja Socios.")
+
+        # 4. Generar Link
+        if tel_final:
+            link = f"https://wa.me/{tel_final}?text={urllib.parse.quote(txt)}"
+            st.success(f"Número detectado: {tel_final}")
+            st.markdown(f"### 👉 [ENVIAR WHATSAPP AHORA]({link})")
+        else:
+            st.error("No se pudo generar el enlace porque falta el número.")
 
 # --- MÓDULO 7: PDF ---
 elif menu == "7. 📄 PDF":
@@ -440,6 +485,7 @@ elif menu == "7. 📄 PDF":
         sal_ini = df_caja[mask_ant & (df_caja["Tipo"]=="Ingreso")]["Monto"].sum() - df_caja[mask_ant & (df_caja["Tipo"]=="Egreso")]["Monto"].sum()
         mask_mes = (df["Fecha"] >= f_ini) & (df["Fecha"] < f_fin)
         df_mes_completo = df[mask_mes].sort_values("Fecha")
+        
         pdf_data = generar_pdf_caja(df_mes_completo, sal_ini, mes_selec, anio_selec, lista_nombres)
         b64 = base64.b64encode(pdf_data).decode()
         href = f'<a href="data:application/octet-stream;base64,{b64}" download="Informe_Villa_{mes_selec}_{anio_selec}.pdf">📥 DESCARGAR PDF</a>'
