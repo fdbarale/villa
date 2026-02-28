@@ -292,7 +292,7 @@ elif menu == "2. ⚡ Luz":
         guardar_lote_movimientos([[hoy, "Egreso", "Luz", socio, f"Luz {cons}kw", tot]])
         st.success("✅ Cargado.")
 
-# --- MÓDULO 3: INTERESES (CÁLCULO SOBRE SALDO ACTUAL) ---
+# --- MÓDULO 3: INTERESES (CÁLCULO JUSTO SOBRE SALDO VENCIDO) ---
 elif menu == "3. 📈 Cálculo Intereses":
     st.header("Actualización de Deuda e Intereses")
     
@@ -304,40 +304,47 @@ elif menu == "3. 📈 Cálculo Intereses":
         st.session_state.filas_intereses = []
     
     st.markdown("""
-    **Nuevo Criterio de Cálculo:**
-    1. Se toma el **Saldo Actual Total** al día de hoy (ya incluye los pagos y gastos que hayas cargado este mes).
-    2. Se aplica la **Inflación** sobre la deuda restante.
-    3. Sobre el nuevo monto (Deuda + Inflación), se aplica el **5% Punitorio**.
+    **Criterio de Cálculo Justo:**
+    1. Se toma la **Deuda Histórica** (Gastos generados *antes* del mes seleccionado).
+    2. Se le descuentan **TODOS los pagos o créditos** que el vecino haya hecho (incluso los de este mes).
+    3. *No se cobran intereses sobre los gastos nuevos de este mes*, porque aún no están vencidos.
     """)
     
-    if st.button("🔍 1. Calcular sobre Saldos Negativos Actuales"):
+    if st.button("🔍 1. Calcular sobre Saldos Vencidos"):
         df = cargar_movimientos()
         filas_temp = []
         hoy = datetime.now().strftime("%Y-%m-%d")
         
-        st.session_state.filas_intereses = [] # Limpiamos
+        st.session_state.filas_intereses = [] # Limpiamos cálculo anterior
         
         st.write("---")
         st.subheader("Resultados del Cálculo:")
         hay_deuda = False
         
         for v in lista_nombres:
-            # Tomamos TODOS los movimientos cargados hasta este momento exacto.
             m = df[df["Socio"] == v]
-            saldo_actual = m[m["Tipo"]=="Ingreso"]["Monto"].sum() - m[m["Tipo"]=="Egreso"]["Monto"].sum()
             
-            if saldo_actual < -100: # Tolerancia
+            # 1. Sumamos TODOS los ingresos (Pagos y créditos, sin importar la fecha)
+            ingresos_totales = m[m["Tipo"] == "Ingreso"]["Monto"].sum()
+            
+            # 2. Sumamos SOLO los egresos VIEJOS (Gastos cargados antes del 1ro del mes actual)
+            egresos_viejos = m[(m["Tipo"] == "Egreso") & (m["Fecha"] < f_ini)]["Monto"].sum()
+            
+            # 3. El saldo base para calcular intereses
+            saldo_base_interes = ingresos_totales - egresos_viejos
+            
+            if saldo_base_interes < -100: # Tolerancia de $100
                 hay_deuda = True
-                deuda_base = abs(saldo_actual)
+                deuda_vencida = abs(saldo_base_interes)
                 
                 # MATEMÁTICA: (Deuda + Inf) + 5%
-                monto_inf = deuda_base * (INFLACION_MENSUAL / 100)
-                subtotal = deuda_base + monto_inf
+                monto_inf = deuda_vencida * (INFLACION_MENSUAL / 100)
+                subtotal = deuda_vencida + monto_inf
                 monto_pun = subtotal * 0.05
                 total_recargo = monto_inf + monto_pun
                 
                 st.error(f"👤 **{v}**")
-                st.write(f"- Deuda Final Actual: ${deuda_base:,.2f}")
+                st.write(f"- Deuda Vencida (ignorando gastos de este mes): ${deuda_vencida:,.2f}")
                 st.write(f"- Inflación ({INFLACION_MENSUAL}%): +${monto_inf:,.2f}")
                 st.write(f"- Punitorio (5% s/actualizado): +${monto_pun:,.2f}")
                 st.write(f"- **TOTAL A AGREGAR: ${total_recargo:,.2f}**")
@@ -352,7 +359,7 @@ elif menu == "3. 📈 Cálculo Intereses":
             st.session_state.filas_intereses = filas_temp
             st.success("✅ Cálculo realizado. Revisá arriba y confirmá abajo.")
         else:
-            st.info("👏 Ningún vecino registra deuda al día de hoy.")
+            st.info("👏 Ningún vecino registra deuda vencida de meses anteriores.")
 
     if len(st.session_state.filas_intereses) > 0:
         st.write("---")
