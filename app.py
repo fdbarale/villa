@@ -31,13 +31,9 @@ def cargar_movimientos():
     df = pd.DataFrame(ws.get_all_records())
     
     if not df.empty:
-        # 1. Limpiamos espacios vacíos y borramos filas sin fecha
         df = df[df["Fecha"].astype(str).str.strip() != ""]
-        # 2. Convertimos a fecha de forma SEGURA (errors='coerce' evita crasheos)
         df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
-        # 3. Borramos las filas que tenían fechas inválidas
         df = df.dropna(subset=["Fecha"])
-        # 4. Convertimos los montos asegurando que sean números
         df["Monto"] = pd.to_numeric(df["Monto"], errors="coerce").fillna(0)
         
     return df
@@ -99,13 +95,11 @@ def guardar_configuracion(precio_kwh, inflacion):
 # --- 3. CLASE PDF CON LOGO ---
 class PDF(FPDF):
     def header(self):
-        # 1. Intentamos cargar el Logo (si no existe, sigue sin romperse)
         try:
             self.image('logo.png', 10, 8, 30)
         except:
             pass 
 
-        # 2. Títulos
         self.set_font('Arial', 'B', 15)
         self.cell(0, 10, 'Administración Villa Soñada', 0, 1, 'C')
         self.set_font('Arial', 'I', 9)
@@ -270,6 +264,9 @@ elif menu == "2. ⚡ Luz":
     st.header("Carga de Luz")
     st.info(f"Precio del kWh actual: **${PRECIO_KWH}** (Configurado en Menú 8)")
     
+    # 🆕 AGREGADO: Selector de fecha para Luz
+    fecha_luz = st.date_input("Fecha de Registro", datetime.now())
+    
     socio = st.selectbox("Vecino", lista_nombres)
     
     if 'luz_ant' not in st.session_state: st.session_state.luz_ant = 0
@@ -287,10 +284,11 @@ elif menu == "2. ⚡ Luz":
     st.metric("A Pagar", f"${tot:,.2f}")
     
     if st.button("💾 Guardar Luz"):
-        hoy = datetime.now().strftime("%Y-%m-%d")
+        # Convierte la fecha elegida arriba a formato texto
+        hoy = fecha_luz.strftime("%Y-%m-%d")
         guardar_lectura_tecnica([hoy, socio, ant, act, cons, pr, tot])
         guardar_lote_movimientos([[hoy, "Egreso", "Luz", socio, f"Luz {cons}kw", tot]])
-        st.success("✅ Cargado.")
+        st.success(f"✅ Cargado con fecha {hoy}.")
 
 # --- MÓDULO 3: INTERESES (CÁLCULO JUSTO SOBRE SALDO VENCIDO) ---
 elif menu == "3. 📈 Cálculo Intereses":
@@ -306,7 +304,7 @@ elif menu == "3. 📈 Cálculo Intereses":
     st.markdown("""
     **Criterio de Cálculo Justo:**
     1. Se toma la **Deuda Histórica** (Gastos generados *antes* del mes seleccionado).
-    2. Se le descuentan **TODOS los pagos o créditos** que el vecino haya hecho (incluso los de este mes).
+    2. Se le descuentan **TODOS los pagos o créditos** que el vecino haya hecho.
     3. *No se cobran intereses sobre los gastos nuevos de este mes*, porque aún no están vencidos.
     """)
     
@@ -315,7 +313,7 @@ elif menu == "3. 📈 Cálculo Intereses":
         filas_temp = []
         hoy = datetime.now().strftime("%Y-%m-%d")
         
-        st.session_state.filas_intereses = [] # Limpiamos cálculo anterior
+        st.session_state.filas_intereses = []
         
         st.write("---")
         st.subheader("Resultados del Cálculo:")
@@ -323,28 +321,21 @@ elif menu == "3. 📈 Cálculo Intereses":
         
         for v in lista_nombres:
             m = df[df["Socio"] == v]
-            
-            # 1. Sumamos TODOS los ingresos (Pagos y créditos, sin importar la fecha)
             ingresos_totales = m[m["Tipo"] == "Ingreso"]["Monto"].sum()
-            
-            # 2. Sumamos SOLO los egresos VIEJOS (Gastos cargados antes del 1ro del mes actual)
             egresos_viejos = m[(m["Tipo"] == "Egreso") & (m["Fecha"] < f_ini)]["Monto"].sum()
-            
-            # 3. El saldo base para calcular intereses
             saldo_base_interes = ingresos_totales - egresos_viejos
             
-            if saldo_base_interes < -100: # Tolerancia de $100
+            if saldo_base_interes < -100: 
                 hay_deuda = True
                 deuda_vencida = abs(saldo_base_interes)
                 
-                # MATEMÁTICA: (Deuda + Inf) + 5%
                 monto_inf = deuda_vencida * (INFLACION_MENSUAL / 100)
                 subtotal = deuda_vencida + monto_inf
                 monto_pun = subtotal * 0.05
                 total_recargo = monto_inf + monto_pun
                 
                 st.error(f"👤 **{v}**")
-                st.write(f"- Deuda Vencida (ignorando gastos de este mes): ${deuda_vencida:,.2f}")
+                st.write(f"- Deuda Vencida (ignorando mes actual): ${deuda_vencida:,.2f}")
                 st.write(f"- Inflación ({INFLACION_MENSUAL}%): +${monto_inf:,.2f}")
                 st.write(f"- Punitorio (5% s/actualizado): +${monto_pun:,.2f}")
                 st.write(f"- **TOTAL A AGREGAR: ${total_recargo:,.2f}**")
@@ -378,11 +369,15 @@ elif menu == "4. ⚖️ Movimientos Especiales":
     
     with tab1:
         st.subheader("Crédito a Socios")
+        # 🆕 AGREGADO: Selector de fecha para Créditos
+        fecha_credito = st.date_input("Fecha del Crédito", datetime.now(), key="fc_cred")
+        
         socios_acreedores = st.multiselect("¿A quiénes se acredita?", lista_nombres)
         monto_cred = st.number_input("Monto Crédito ($)", min_value=0.0, step=100.0)
         det_cred = st.text_input("Detalle Crédito")
+        
         if st.button("Ejecutar Crédito"):
-            hoy = datetime.now().strftime("%Y-%m-%d")
+            hoy = fecha_credito.strftime("%Y-%m-%d")
             filas = []
             cuota_todos = monto_cred / len(lista_nombres)
             for v in lista_nombres:
@@ -391,22 +386,26 @@ elif menu == "4. ⚖️ Movimientos Especiales":
             for acreedor in socios_acreedores:
                 filas.append([hoy, "Ingreso", "Crédito Especial", acreedor, f"Devolución: {det_cred}", div_credito])
             guardar_lote_movimientos(filas)
-            st.success("✅ Hecho.")
+            st.success("✅ Crédito registrado correctamente.")
 
     with tab2:
         st.subheader("Gastos de Grupo")
+        # 🆕 AGREGADO: Selector de fecha para Gastos a grupo
+        fecha_grupo = st.date_input("Fecha del Gasto", datetime.now(), key="fc_gasto")
+        
         socios_deudores = st.multiselect("¿A quiénes se cobra?", lista_nombres)
         monto_gasto = st.number_input("Monto Gasto ($)", min_value=0.0, step=100.0)
         det_gasto = st.text_input("Detalle Gasto")
+        
         if st.button("Ejecutar Cobro"):
-            hoy = datetime.now().strftime("%Y-%m-%d")
+            hoy = fecha_grupo.strftime("%Y-%m-%d")
             filas = []
             filas.append([hoy, "Egreso", "Gasto Real", "SOCIEDAD_GASTOS", f"Adelanto: {det_gasto}", monto_gasto])
             cuota_grupo = monto_gasto / len(socios_deudores)
             for deudor in socios_deudores:
                 filas.append([hoy, "Egreso", "Particular", deudor, f"Cobro: {det_gasto}", cuota_grupo])
             guardar_lote_movimientos(filas)
-            st.success("✅ Hecho.")
+            st.success("✅ Cobro registrado correctamente.")
 
 # --- MÓDULO 5: CUENTAS ---
 elif menu == "5. 🔍 Cuentas":
@@ -454,7 +453,20 @@ elif menu == "6. 📲 WhatsApp":
             m = r["Monto"]
             if r["Tipo"]=="Ingreso": sal_temp+=m
             else: sal_temp-=m
-            txt += f"{r['Fecha'].strftime('%d/%m')} {str(r['Concepto'])[:15]}: {sig}${m:,.0f}\n"
+            
+            # 🆕 AGREGADO: Lógica inteligente para limpiar los prefijos ("Parte de:", "Devolución:", etc)
+            concepto_crudo = str(r['Concepto'])
+            if ":" in concepto_crudo:
+                # Si hay dos puntos, se queda SOLO con lo que está a la derecha
+                concepto_limpio = concepto_crudo.split(":", 1)[1].strip()
+            else:
+                # Si no hay dos puntos, lo deja como está
+                concepto_limpio = concepto_crudo.strip()
+                
+            # Cortamos a 18 letras máximo para que el WhatsApp no quede de 3 kilómetros
+            concepto_corto = concepto_limpio[:18]
+            
+            txt += f"{r['Fecha'].strftime('%d/%m')} {concepto_corto}: {sig}${m:,.0f}\n"
         
         txt += f"----------------\n*SALDO FINAL: ${sal_temp:,.2f}*"
         
