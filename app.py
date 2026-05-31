@@ -116,7 +116,7 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     pdf.add_page()
     pdf.set_font("Arial", size=10)
     
-    # CAJA
+    # 1. CAJA REAL
     pdf.set_font("Arial", 'B', 11)
     pdf.cell(0, 10, f"1. MOVIMIENTOS REALES (CAJA) - {mes}/{anio}", 0, 1)
     pdf.set_font("Arial", size=9)
@@ -134,8 +134,9 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     tot_egr = 0
     
     for i, row in df.iterrows():
-        es_gasto_caja = (row["Socio"] == "SOCIEDAD_GASTOS") or (row["Categoria"] == "Gasto Real")
-        es_ingreso = (row["Tipo"] == "Ingreso")
+        # Filtro estricto para que la caja real no se contamine con los créditos figurativos
+        es_gasto_caja = (row["Socio"] == "SOCIEDAD_GASTOS") and (row["Categoria"] == "Gasto Real")
+        es_ingreso = (row["Tipo"] == "Ingreso") and (row["Categoria"] != "Crédito Especial")
         
         if es_gasto_caja or es_ingreso:
             m = row["Monto"]
@@ -159,9 +160,30 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     pdf.cell(0, 8, f"TOTAL INGRESOS: ${tot_ing:,.2f} | TOTAL EGRESOS: ${tot_egr:,.2f}", 0, 1)
     pdf.cell(0, 8, f"SALDO CIERRE CAJA: ${saldo:,.2f}", 0, 1)
     
-    # DEUDORES
+    # 2. GASTOS INTERNOS Y PRORRATEOS (Acá va el alambrado!)
+    df_internos = df[(df["Socio"] == "SOCIEDAD_GASTOS") & (df["Categoria"] == "Gasto Interno")]
+    if not df_internos.empty:
+        pdf.ln(10)
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(0, 10, f"2. GASTOS INTERNOS Y PRORRATEOS (No afectan efectivo)", 0, 1)
+        pdf.set_font("Arial", size=9)
+        pdf.cell(0, 8, "Estos montos fueron divididos y cargados a las cuentas de los vecinos:", 0, 1)
+        
+        pdf.set_fill_color(240, 240, 240)
+        pdf.cell(25, 8, "Fecha", 1, 0, 'C', 1)
+        pdf.cell(115, 8, "Detalle", 1, 0, 'C', 1)
+        pdf.cell(50, 8, "Monto Total", 1, 1, 'C', 1)
+        
+        for i, row in df_internos.iterrows():
+            pdf.cell(25, 8, row["Fecha"].strftime("%d/%m"), 1)
+            det = str(row["Concepto"])[:60]
+            pdf.cell(115, 8, det, 1)
+            pdf.cell(50, 8, f"${row['Monto']:,.2f}", 1, 1, 'R')
+            
+    # 3. DEUDORES
     pdf.ln(10)
-    pdf.cell(0, 10, f"2. ESTADO DE DEUDAS (Financiero)", 0, 1)
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 10, f"ESTADO DE DEUDAS (Financiero)", 0, 1)
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(70, 8, "Vecino", 1, 0, 'C', 1)
     pdf.cell(40, 8, "Saldo a Favor", 1, 0, 'C', 1)
@@ -264,9 +286,7 @@ elif menu == "2. ⚡ Luz":
     st.header("Carga de Luz")
     st.info(f"Precio del kWh actual: **${PRECIO_KWH}** (Configurado en Menú 8)")
     
-    # 🆕 AGREGADO: Selector de fecha para Luz
     fecha_luz = st.date_input("Fecha de Registro", datetime.now())
-    
     socio = st.selectbox("Vecino", lista_nombres)
     
     if 'luz_ant' not in st.session_state: st.session_state.luz_ant = 0
@@ -276,7 +296,6 @@ elif menu == "2. ⚡ Luz":
 
     ant = st.number_input("Anterior", value=st.session_state.luz_ant)
     act = st.number_input("Actual", min_value=st.session_state.luz_ant)
-    
     pr = st.number_input("Precio kWh", value=PRECIO_KWH, disabled=True)
     
     cons = act - ant
@@ -284,13 +303,12 @@ elif menu == "2. ⚡ Luz":
     st.metric("A Pagar", f"${tot:,.2f}")
     
     if st.button("💾 Guardar Luz"):
-        # Convierte la fecha elegida arriba a formato texto
         hoy = fecha_luz.strftime("%Y-%m-%d")
         guardar_lectura_tecnica([hoy, socio, ant, act, cons, pr, tot])
         guardar_lote_movimientos([[hoy, "Egreso", "Luz", socio, f"Luz {cons}kw", tot]])
         st.success(f"✅ Cargado con fecha {hoy}.")
 
-# --- MÓDULO 3: INTERESES (CÁLCULO JUSTO SOBRE SALDO VENCIDO) ---
+# --- MÓDULO 3: INTERESES ---
 elif menu == "3. 📈 Cálculo Intereses":
     st.header("Actualización de Deuda e Intereses")
     
@@ -369,9 +387,7 @@ elif menu == "4. ⚖️ Movimientos Especiales":
     
     with tab1:
         st.subheader("Crédito a Socios")
-        # 🆕 AGREGADO: Selector de fecha para Créditos
         fecha_credito = st.date_input("Fecha del Crédito", datetime.now(), key="fc_cred")
-        
         socios_acreedores = st.multiselect("¿A quiénes se acredita?", lista_nombres)
         monto_cred = st.number_input("Monto Crédito ($)", min_value=0.0, step=100.0)
         det_cred = st.text_input("Detalle Crédito")
@@ -379,6 +395,10 @@ elif menu == "4. ⚖️ Movimientos Especiales":
         if st.button("Ejecutar Crédito"):
             hoy = fecha_credito.strftime("%Y-%m-%d")
             filas = []
+            
+            # ACÁ ESTÁ EL SECRETO: Le avisamos al sistema que hay un gasto general "interno", así sale en el PDF.
+            filas.append([hoy, "Egreso", "Gasto Interno", "SOCIEDAD_GASTOS", f"Crédito Prorrateado: {det_cred}", monto_cred])
+            
             cuota_todos = monto_cred / len(lista_nombres)
             for v in lista_nombres:
                 filas.append([hoy, "Egreso", "Cuota Parte", v, f"Gasto: {det_cred}", cuota_todos])
@@ -390,9 +410,7 @@ elif menu == "4. ⚖️ Movimientos Especiales":
 
     with tab2:
         st.subheader("Gastos de Grupo")
-        # 🆕 AGREGADO: Selector de fecha para Gastos a grupo
         fecha_grupo = st.date_input("Fecha del Gasto", datetime.now(), key="fc_gasto")
-        
         socios_deudores = st.multiselect("¿A quiénes se cobra?", lista_nombres)
         monto_gasto = st.number_input("Monto Gasto ($)", min_value=0.0, step=100.0)
         det_gasto = st.text_input("Detalle Gasto")
@@ -435,15 +453,12 @@ elif menu == "6. 📲 WhatsApp":
     
     if not df.empty:
         vecino = st.selectbox("Vecino", lista_nombres)
-        
-        # 1. Calculamos Saldos
         df_v = df[df["Socio"] == vecino]
         mask_ant = df_v["Fecha"] < f_ini
         sal_ant = df_v[mask_ant & (df_v["Tipo"]=="Ingreso")]["Monto"].sum() - df_v[mask_ant & (df_v["Tipo"]=="Egreso")]["Monto"].sum()
         mask_mes = (df_v["Fecha"] >= f_ini) & (df_v["Fecha"] < f_fin)
         df_mes = df_v[mask_mes].sort_values("Fecha")
         
-        # 2. Armamos el Texto
         txt = f"*RESUMEN {mes_selec}/{anio_selec}*\nVecino: {vecino}\n"
         txt += f"Saldo Anterior: ${sal_ant:,.2f}\n----------------\n"
         
@@ -454,23 +469,17 @@ elif menu == "6. 📲 WhatsApp":
             if r["Tipo"]=="Ingreso": sal_temp+=m
             else: sal_temp-=m
             
-            # 🆕 AGREGADO: Lógica inteligente para limpiar los prefijos ("Parte de:", "Devolución:", etc)
             concepto_crudo = str(r['Concepto'])
             if ":" in concepto_crudo:
-                # Si hay dos puntos, se queda SOLO con lo que está a la derecha
                 concepto_limpio = concepto_crudo.split(":", 1)[1].strip()
             else:
-                # Si no hay dos puntos, lo deja como está
                 concepto_limpio = concepto_crudo.strip()
                 
-            # Cortamos a 18 letras máximo para que el WhatsApp no quede de 3 kilómetros
             concepto_corto = concepto_limpio[:18]
-            
             txt += f"{r['Fecha'].strftime('%d/%m')} {concepto_corto}: {sig}${m:,.0f}\n"
         
         txt += f"----------------\n*SALDO FINAL: ${sal_temp:,.2f}*"
         
-        # 3. CORRECCIÓN INTELIGENTE DE TELÉFONO
         tel_final = ""
         if not df_socios_completo.empty:
             s = df_socios_completo[df_socios_completo["Nombre"] == vecino]
@@ -485,7 +494,6 @@ elif menu == "6. 📲 WhatsApp":
                 else:
                     st.warning("⚠️ Este vecino no tiene teléfono cargado en la hoja Socios.")
 
-        # 4. Generar Link
         if tel_final:
             link = f"https://wa.me/{tel_final}?text={urllib.parse.quote(txt)}"
             st.success(f"Número detectado: {tel_final}")
@@ -498,10 +506,12 @@ elif menu == "7. 📄 PDF":
     st.header(f"Informe Financiero: {mes_selec}/{anio_selec}")
     df = cargar_movimientos()
     if st.button("🖨️ Generar PDF"):
-        mask_caja = (df["Socio"] == "SOCIEDAD_GASTOS") | (df["Tipo"] == "Ingreso")
+        # Filtro estricto para evitar que los Créditos Especiales simulen "plata falsa" en la caja inicial
+        mask_caja = ((df["Socio"] == "SOCIEDAD_GASTOS") & (df["Categoria"] == "Gasto Real")) | ((df["Tipo"] == "Ingreso") & (df["Categoria"] != "Crédito Especial"))
         df_caja = df[mask_caja]
         mask_ant = df_caja["Fecha"] < f_ini
         sal_ini = df_caja[mask_ant & (df_caja["Tipo"]=="Ingreso")]["Monto"].sum() - df_caja[mask_ant & (df_caja["Tipo"]=="Egreso")]["Monto"].sum()
+        
         mask_mes = (df["Fecha"] >= f_ini) & (df["Fecha"] < f_fin)
         df_mes_completo = df[mask_mes].sort_values("Fecha")
         
