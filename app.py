@@ -92,14 +92,13 @@ def guardar_configuracion(precio_kwh, inflacion):
     except Exception as e:
         st.error(f"Error guardando config: {e}")
 
-# --- 3. CLASE PDF CON LOGO ---
+# --- 3. CLASES PDF (REPORTE Y RECIBO) ---
 class PDF(FPDF):
     def header(self):
         try:
             self.image('logo.png', 10, 8, 30)
         except:
             pass 
-
         self.set_font('Arial', 'B', 15)
         self.cell(0, 10, 'Administración Villa Soñada', 0, 1, 'C')
         self.set_font('Arial', 'I', 9)
@@ -111,7 +110,39 @@ class PDF(FPDF):
         self.set_font('Arial', 'I', 8)
         self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
 
-def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
+class ReciboPDF(FPDF):
+    def header(self):
+        try:
+            self.image('logo.png', 10, 8, 25)
+        except:
+            pass
+        self.set_font('Arial', 'B', 14)
+        self.cell(0, 10, 'Administración Villa Soñada', 0, 1, 'R')
+        self.set_font('Arial', 'B', 12)
+        self.cell(0, 10, 'RECIBO OFICIAL', 0, 1, 'R')
+        self.ln(10)
+
+def generar_recibo_pdf(fecha, socio, monto, concepto):
+    pdf = ReciboPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    
+    # Cuadro de datos
+    pdf.set_fill_color(240, 240, 240)
+    pdf.cell(0, 10, f" Fecha: {fecha}", 1, 1, 'L', 1)
+    pdf.cell(0, 10, f" Recibimos de: {socio}", 1, 1, 'L')
+    pdf.cell(0, 10, f" La cantidad de: ${monto:,.2f}", 1, 1, 'L')
+    pdf.cell(0, 10, f" En concepto de: {concepto}", 1, 1, 'L')
+    
+    pdf.ln(25)
+    pdf.set_font("Arial", size=10)
+    pdf.cell(80, 10, "______________________________", 0, 0, 'C')
+    pdf.cell(0, 10, "", 0, 1)
+    pdf.cell(80, 5, "Firma de la Administración", 0, 1, 'C')
+    
+    return pdf.output(dest='S').encode('latin-1')
+
+def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios, f_fin):
     pdf = PDF()
     pdf.add_page()
     pdf.set_font("Arial", size=10)
@@ -134,7 +165,6 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     tot_egr = 0
     
     for i, row in df.iterrows():
-        # Filtro estricto para que la caja real no se contamine con los créditos figurativos
         es_gasto_caja = (row["Socio"] == "SOCIEDAD_GASTOS") and (row["Categoria"] == "Gasto Real")
         es_ingreso = (row["Tipo"] == "Ingreso") and (row["Categoria"] != "Crédito Especial")
         
@@ -160,7 +190,7 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     pdf.cell(0, 8, f"TOTAL INGRESOS: ${tot_ing:,.2f} | TOTAL EGRESOS: ${tot_egr:,.2f}", 0, 1)
     pdf.cell(0, 8, f"SALDO CIERRE CAJA: ${saldo:,.2f}", 0, 1)
     
-    # 2. GASTOS INTERNOS Y PRORRATEOS (Acá va el alambrado!)
+    # 2. GASTOS INTERNOS Y PRORRATEOS
     df_internos = df[(df["Socio"] == "SOCIEDAD_GASTOS") & (df["Categoria"] == "Gasto Interno")]
     if not df_internos.empty:
         pdf.ln(10)
@@ -180,10 +210,11 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
             pdf.cell(115, 8, det, 1)
             pdf.cell(50, 8, f"${row['Monto']:,.2f}", 1, 1, 'R')
             
-    # 3. DEUDORES
+    # 3. DEUDORES (SOLO HASTA EL FIN DEL MES SELECCIONADO)
     pdf.ln(10)
     pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 10, f"ESTADO DE DEUDAS (Financiero)", 0, 1)
+    # Cambié el título para que sea claro hasta cuándo se miden las deudas
+    pdf.cell(0, 10, f"ESTADO DE DEUDAS (Al cierre del mes {mes}/{anio})", 0, 1)
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(70, 8, "Vecino", 1, 0, 'C', 1)
     pdf.cell(40, 8, "Saldo a Favor", 1, 0, 'C', 1)
@@ -191,9 +222,13 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
     pdf.set_font("Arial", size=9)
     
     df_full = cargar_movimientos()
+    
+    # ACÁ ESTÁ LA MAGIA 1: Filtramos los movimientos para que no tome NADA posterior al mes seleccionado
+    df_foto_fija = df_full[df_full["Fecha"] < f_fin]
+    
     hay_deuda = False
     for vec in lista_socios:
-        m = df_full[df_full["Socio"] == vec]
+        m = df_foto_fija[df_foto_fija["Socio"] == vec]
         s_neto = m[m["Tipo"]=="Ingreso"]["Monto"].sum() - m[m["Tipo"]=="Egreso"]["Monto"].sum()
         
         if s_neto < -100:
@@ -204,7 +239,7 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios):
             pdf.cell(40, 8, f"${abs(s_neto):,.2f}", 1, 1, 'R')
             pdf.set_text_color(0, 0, 0)
     
-    if not hay_deuda: pdf.cell(150, 8, "Sin deudas registradas.", 1, 1, 'C')
+    if not hay_deuda: pdf.cell(150, 8, "Sin deudas registradas a esa fecha.", 1, 1, 'C')
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 4. INTERFAZ ---
@@ -261,7 +296,7 @@ if menu == "1. 📝 Cargar Op.":
 
     c1, c2 = st.columns(2)
     monto = c1.number_input("Monto ($)", min_value=0.0, step=100.0)
-    concepto = c2.text_input("Concepto")
+    concepto = c2.text_input("Concepto (Si es cobro físico, incluí la palabra 'efectivo')")
     
     st.write("---")
     if st.button("💾 CONFIRMAR Y GUARDAR"):
@@ -273,13 +308,22 @@ if menu == "1. 📝 Cargar Op.":
             cuota = monto / len(lista_nombres)
             for v in lista_nombres:
                 filas.append([hoy_str, "Egreso", "Cuota Parte", v, f"Parte de: {concepto}", cuota])
+            guardar_lote_movimientos(filas)
             st.success("✅ Gasto General guardado y prorrateado.")
         else:
             tr = "Ingreso" if "Ingreso" in tipo_op else "Egreso"
             filas.append([hoy_str, tr, destino, socio, concepto, monto])
+            guardar_lote_movimientos(filas)
             st.success("✅ Operación guardada.")
             
-        guardar_lote_movimientos(filas)
+            # ACÁ ESTÁ LA MAGIA 2: Generador de Recibos
+            if tr == "Ingreso" and "efectivo" in concepto.lower():
+                pdf_recibo = generar_recibo_pdf(hoy_str, socio, monto, concepto)
+                b64 = base64.b64encode(pdf_recibo).decode()
+                # Botón de descarga visualmente atractivo
+                href = f'<a href="data:application/octet-stream;base64,{b64}" download="Recibo_{socio}_{hoy_str}.pdf" target="_blank" style="display: inline-block; padding: 12px 24px; background-color: #28a745; color: white; font-weight: bold; text-align: center; text-decoration: none; border-radius: 8px;">🧾 DESCARGAR RECIBO PDF</a>'
+                st.info(f"¡Se detectó un pago en efectivo de {socio}! Hacé clic abajo para obtener su recibo.")
+                st.markdown(href, unsafe_allow_html=True)
 
 # --- MÓDULO 2: LUZ ---
 elif menu == "2. ⚡ Luz":
@@ -396,7 +440,6 @@ elif menu == "4. ⚖️ Movimientos Especiales":
             hoy = fecha_credito.strftime("%Y-%m-%d")
             filas = []
             
-            # ACÁ ESTÁ EL SECRETO: Le avisamos al sistema que hay un gasto general "interno", así sale en el PDF.
             filas.append([hoy, "Egreso", "Gasto Interno", "SOCIEDAD_GASTOS", f"Crédito Prorrateado: {det_cred}", monto_cred])
             
             cuota_todos = monto_cred / len(lista_nombres)
@@ -506,7 +549,6 @@ elif menu == "7. 📄 PDF":
     st.header(f"Informe Financiero: {mes_selec}/{anio_selec}")
     df = cargar_movimientos()
     if st.button("🖨️ Generar PDF"):
-        # Filtro estricto para evitar que los Créditos Especiales simulen "plata falsa" en la caja inicial
         mask_caja = ((df["Socio"] == "SOCIEDAD_GASTOS") & (df["Categoria"] == "Gasto Real")) | ((df["Tipo"] == "Ingreso") & (df["Categoria"] != "Crédito Especial"))
         df_caja = df[mask_caja]
         mask_ant = df_caja["Fecha"] < f_ini
@@ -515,7 +557,9 @@ elif menu == "7. 📄 PDF":
         mask_mes = (df["Fecha"] >= f_ini) & (df["Fecha"] < f_fin)
         df_mes_completo = df[mask_mes].sort_values("Fecha")
         
-        pdf_data = generar_pdf_caja(df_mes_completo, sal_ini, mes_selec, anio_selec, lista_nombres)
+        # Le pasamos f_fin a la función para que sepa hasta dónde cortar
+        pdf_data = generar_pdf_caja(df_mes_completo, sal_ini, mes_selec, anio_selec, lista_nombres, f_fin)
+        
         b64 = base64.b64encode(pdf_data).decode()
         href = f'<a href="data:application/octet-stream;base64,{b64}" download="Informe_Villa_{mes_selec}_{anio_selec}.pdf">📥 DESCARGAR PDF</a>'
         st.markdown(href, unsafe_allow_html=True)
