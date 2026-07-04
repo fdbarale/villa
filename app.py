@@ -127,7 +127,6 @@ def generar_recibo_pdf(fecha, socio, monto, concepto):
     pdf.add_page()
     pdf.set_font("Arial", size=12)
     
-    # Cuadro de datos
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(0, 10, f" Fecha: {fecha}", 1, 1, 'L', 1)
     pdf.cell(0, 10, f" Recibimos de: {socio}", 1, 1, 'L')
@@ -210,10 +209,9 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios, f_fin):
             pdf.cell(115, 8, det, 1)
             pdf.cell(50, 8, f"${row['Monto']:,.2f}", 1, 1, 'R')
             
-    # 3. DEUDORES (SOLO HASTA EL FIN DEL MES SELECCIONADO)
+    # 3. DEUDORES
     pdf.ln(10)
     pdf.set_font("Arial", 'B', 11)
-    # Cambié el título para que sea claro hasta cuándo se miden las deudas
     pdf.cell(0, 10, f"ESTADO DE DEUDAS (Al cierre del mes {mes}/{anio})", 0, 1)
     pdf.set_font("Arial", 'B', 9)
     pdf.cell(70, 8, "Vecino", 1, 0, 'C', 1)
@@ -222,8 +220,6 @@ def generar_pdf_caja(df, saldo_ini, mes, anio, lista_socios, f_fin):
     pdf.set_font("Arial", size=9)
     
     df_full = cargar_movimientos()
-    
-    # ACÁ ESTÁ LA MAGIA 1: Filtramos los movimientos para que no tome NADA posterior al mes seleccionado
     df_foto_fija = df_full[df_full["Fecha"] < f_fin]
     
     hay_deuda = False
@@ -316,11 +312,9 @@ if menu == "1. 📝 Cargar Op.":
             guardar_lote_movimientos(filas)
             st.success("✅ Operación guardada.")
             
-            # ACÁ ESTÁ LA MAGIA 2: Generador de Recibos
             if tr == "Ingreso" and "efectivo" in concepto.lower():
                 pdf_recibo = generar_recibo_pdf(hoy_str, socio, monto, concepto)
                 b64 = base64.b64encode(pdf_recibo).decode()
-                # Botón de descarga visualmente atractivo
                 href = f'<a href="data:application/octet-stream;base64,{b64}" download="Recibo_{socio}_{hoy_str}.pdf" target="_blank" style="display: inline-block; padding: 12px 24px; background-color: #28a745; color: white; font-weight: bold; text-align: center; text-decoration: none; border-radius: 8px;">🧾 DESCARGAR RECIBO PDF</a>'
                 st.info(f"¡Se detectó un pago en efectivo de {socio}! Hacé clic abajo para obtener su recibo.")
                 st.markdown(href, unsafe_allow_html=True)
@@ -360,14 +354,21 @@ elif menu == "3. 📈 Cálculo Intereses":
     col1.metric("Inflación Mensual", f"{INFLACION_MENSUAL}%")
     col2.metric("Punitorio Fijo", "5.0%")
     
+    st.markdown("---")
+    st.subheader("⚙️ Parámetros del Cálculo")
+    st.info("Elegí hasta qué fecha un gasto se considera 'Viejo' (vencido). Para un cierre normal, suele ser el 1ro del mes que estás cobrando.")
+    
+    # 🗓️ Nuevo Selector Exclusivo para evitar que la barra lateral afecte el cálculo
+    fecha_corte_interes = st.date_input("Fecha de corte para considerar deuda:", datetime(datetime.now().year, datetime.now().month, 1))
+    
     if 'filas_intereses' not in st.session_state:
         st.session_state.filas_intereses = []
     
-    st.markdown("""
+    st.markdown(f"""
     **Criterio de Cálculo Justo:**
-    1. Se toma la **Deuda Histórica** (Gastos generados *antes* del mes seleccionado).
-    2. Se le descuentan **TODOS los pagos o créditos** que el vecino haya hecho.
-    3. *No se cobran intereses sobre los gastos nuevos de este mes*, porque aún no están vencidos.
+    1. Se suma la deuda de todos los gastos generados **ANTES del {fecha_corte_interes.strftime('%d/%m/%Y')}**.
+    2. Se le descuentan **TODOS los pagos o créditos** que el vecino haya hecho hasta hoy.
+    3. *No se cobran intereses sobre los gastos posteriores* a la fecha de corte.
     """)
     
     if st.button("🔍 1. Calcular sobre Saldos Vencidos"):
@@ -384,7 +385,10 @@ elif menu == "3. 📈 Cálculo Intereses":
         for v in lista_nombres:
             m = df[df["Socio"] == v]
             ingresos_totales = m[m["Tipo"] == "Ingreso"]["Monto"].sum()
-            egresos_viejos = m[(m["Tipo"] == "Egreso") & (m["Fecha"] < f_ini)]["Monto"].sum()
+            
+            # 🔧 La magia: usamos la fecha elegida acá, no la de la barra lateral
+            egresos_viejos = m[(m["Tipo"] == "Egreso") & (m["Fecha"] < pd.to_datetime(fecha_corte_interes))]["Monto"].sum()
+            
             saldo_base_interes = ingresos_totales - egresos_viejos
             
             if saldo_base_interes < -100: 
@@ -397,14 +401,15 @@ elif menu == "3. 📈 Cálculo Intereses":
                 total_recargo = monto_inf + monto_pun
                 
                 st.error(f"👤 **{v}**")
-                st.write(f"- Deuda Vencida (ignorando mes actual): ${deuda_vencida:,.2f}")
+                st.write(f"- Deuda Vencida a penalizar: ${deuda_vencida:,.2f}")
                 st.write(f"- Inflación ({INFLACION_MENSUAL}%): +${monto_inf:,.2f}")
                 st.write(f"- Punitorio (5% s/actualizado): +${monto_pun:,.2f}")
                 st.write(f"- **TOTAL A AGREGAR: ${total_recargo:,.2f}**")
                 
+                # 📝 Corrección de texto para que sea clarísimo
                 filas_temp.append([
                     hoy, "Egreso", "Financiero", v, 
-                    f"Ajuste Mora (Inf {INFLACION_MENSUAL}% + Pun 5%)", total_recargo
+                    f"Ajuste Mora (Inflación {INFLACION_MENSUAL}% + Punitorio 5%)", total_recargo
                 ])
                 st.divider()
 
@@ -412,7 +417,7 @@ elif menu == "3. 📈 Cálculo Intereses":
             st.session_state.filas_intereses = filas_temp
             st.success("✅ Cálculo realizado. Revisá arriba y confirmá abajo.")
         else:
-            st.info("👏 Ningún vecino registra deuda vencida de meses anteriores.")
+            st.info("👏 Ningún vecino registra deuda vencida según la fecha de corte.")
 
     if len(st.session_state.filas_intereses) > 0:
         st.write("---")
@@ -557,7 +562,6 @@ elif menu == "7. 📄 PDF":
         mask_mes = (df["Fecha"] >= f_ini) & (df["Fecha"] < f_fin)
         df_mes_completo = df[mask_mes].sort_values("Fecha")
         
-        # Le pasamos f_fin a la función para que sepa hasta dónde cortar
         pdf_data = generar_pdf_caja(df_mes_completo, sal_ini, mes_selec, anio_selec, lista_nombres, f_fin)
         
         b64 = base64.b64encode(pdf_data).decode()
