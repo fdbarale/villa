@@ -1,5 +1,4 @@
 streamlit
 pandas
-gspread
-google-auth
-fpdf
+supabase
+fpdf2
