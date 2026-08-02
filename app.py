@@ -74,7 +74,7 @@ def conectar_supabase():
 def cargar_movimientos():
     client = conectar_supabase()
     try:
-        resp = client.table("movimientos").select("*").execute()
+        resp = client.table("movimientos").select("*").limit(100000).execute()
         df = pd.DataFrame(resp.data)
         if df.empty:
             return df
