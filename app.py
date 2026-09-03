@@ -43,9 +43,6 @@ if not verificar_acceso():
     st.stop()
 
 # --- Fuente unicode para los PDF (evita que rompan con caracteres raros) ---
-# Descargá DejaVuSans.ttf y DejaVuSans-Bold.ttf (son gratis y de uso libre) y
-# ponelos en la misma carpeta que este archivo. Si no están, la app sigue
-# funcionando con la fuente estándar (menos robusta con algunos caracteres).
 FUENTE_TTF = "DejaVuSans.ttf"
 FUENTE_TTF_BOLD = "DejaVuSans-Bold.ttf"
 HAY_FUENTE_UNICODE = os.path.exists(FUENTE_TTF)
@@ -107,10 +104,7 @@ def obtener_lista_socios():
 
 
 def guardar_lote_movimientos(lista_filas):
-    """lista_filas: lista de [fecha, tipo, categoria, socio, concepto, monto].
-    Se inserta como un único statement -> o entran todas las filas, o ninguna
-    (a diferencia de la versión con Google Sheets, acá no quedan cargas
-    parciales si algo falla a mitad de camino)."""
+    """lista_filas: lista de [fecha, tipo, categoria, socio, concepto, monto]."""
     client = conectar_supabase()
     filas_dict = [
         {
@@ -133,9 +127,6 @@ def guardar_lote_movimientos(lista_filas):
 
 
 def anular_movimiento(fila_original):
-    """Registra el reverso de un movimiento (signo contrario, mismo monto),
-    dejando rastro de cuál fue el original. No borra nada -> mantiene la
-    trazabilidad contable."""
     tipo_contrario = "Egreso" if fila_original["Tipo"] == "Ingreso" else "Ingreso"
     concepto_reverso = f"ANULACIÓN de mov. #{fila_original['id']}: {fila_original['Concepto']}"
     hoy = datetime.now().strftime("%Y-%m-%d")
@@ -147,9 +138,6 @@ def anular_movimiento(fila_original):
 
 
 def eliminar_movimiento_definitivo(id_movimiento):
-    """Borrado real y permanente. Usar sólo cuando el movimiento fue una
-    prueba o un error de tipeo evidente, nunca para 'corregir' un monto ya
-    comunicado a un vecino (para eso, usar anular_movimiento)."""
     client = conectar_supabase()
     try:
         client.table("movimientos").delete().eq("id", id_movimiento).execute()
@@ -200,11 +188,9 @@ def obtener_configuracion():
     try:
         resp = client.table("configuracion").select("*").execute()
         if not resp.data:
-            st.warning("⚠️ No hay configuración guardada todavía, uso valores por defecto.")
             return {"Precio_KWH": 100.0, "Inflacion_Mensual": 10.0}
         return {row["parametro"]: row["valor"] for row in resp.data}
     except Exception as e:
-        st.warning(f"⚠️ No pude leer la configuración, uso valores por defecto: {e}")
         return {"Precio_KWH": 100.0, "Inflacion_Mensual": 10.0}
 
 
@@ -222,7 +208,7 @@ def guardar_configuracion(precio_kwh, inflacion):
 
 
 # ---------------------------------------------------------------------------
-# 3. CLASES PDF (REPORTE Y RECIBO) — fpdf2, con fuente unicode si está disponible
+# 3. CLASES PDF
 # ---------------------------------------------------------------------------
 
 class PDFBase(FPDF):
@@ -455,35 +441,24 @@ if menu == "1. 📝 Cargar Op.":
     monto = c1.number_input("Monto ($)", min_value=0.0, step=100.0)
     concepto = c2.text_input("Concepto (Si es cobro físico, incluí la palabra 'efectivo')")
 
-    tope_cpe = 0
-    if destino == "General" and tipo_op == "Gasto (Salida)" and "cpe" in concepto.lower():
-        st.warning("⚡ Detectado gasto de luz CPE. Se aplicará tope de cobro a vecinos.")
-        tope_cpe = st.number_input("Tope a cobrar por vecino ($)", value=30000.0, step=1000.0)
-
     st.write("---")
     if st.button("💾 CONFIRMAR Y GUARDAR"):
         hoy_str = fecha_op.strftime("%Y-%m-%d")
         filas = []
 
         if destino == "General" and tipo_op == "Gasto (Salida)":
-            filas.append([hoy_str, "Egreso", "Gasto Real", "SOCIEDAD_GASTOS", concepto, monto])
-
-            if "cpe" in concepto.lower() and tope_cpe > 0:
-                cuota = tope_cpe
-                concepto_cuota = "Fondo obras/emergencia"
+            if "cpe" in concepto.lower():
+                filas.append([hoy_str, "Egreso", "Gasto Real", "SOCIEDAD_GASTOS", concepto, monto])
+                if guardar_lote_movimientos(filas):
+                    st.success("✅ Gasto CPE guardado. Se descontó de la Caja pero NO se prorrateó a los vecinos.")
             else:
+                filas.append([hoy_str, "Egreso", "Gasto Real", "SOCIEDAD_GASTOS", concepto, monto])
                 cuota = monto / len(lista_nombres)
-                concepto_cuota = f"Parte de: {concepto}"
-
-            for v in lista_nombres:
-                filas.append([hoy_str, "Egreso", "Cuota Parte", v, concepto_cuota, cuota])
-
-            if guardar_lote_movimientos(filas):
-                if "cpe" in concepto.lower() and tope_cpe > 0:
-                    st.success(f"✅ Gasto General guardado. A cada vecino se le cargaron ${cuota:,.2f} como Fondo de obras.")
-                else:
+                for v in lista_nombres:
+                    filas.append([hoy_str, "Egreso", "Cuota Parte", v, f"Parte de: {concepto}", cuota])
+                
+                if guardar_lote_movimientos(filas):
                     st.success("✅ Gasto General guardado y prorrateado linealmente.")
-
         else:
             tr = "Ingreso" if "Ingreso" in tipo_op else "Egreso"
             filas.append([hoy_str, tr, destino, socio, concepto, monto])
