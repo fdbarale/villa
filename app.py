@@ -52,7 +52,7 @@ HAY_FUENTE_UNICODE = os.path.exists(FUENTE_TTF)
 # 1. CONEXIÓN A SUPABASE
 # ---------------------------------------------------------------------------
 
-@st.cache_resource
+@st.cache_resource(ttl=600)
 def conectar_supabase():
     try:
         url = st.secrets["supabase"]["url"]
