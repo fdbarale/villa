@@ -1,37 +1,42 @@
 import streamlit as st
 import pandas as pd
-import gspread
-from google.oauth2.service_account import Credentials
+from supabase import create_client
 
 # --- CONFIGURACIÓN SIMPLE ---
 st.set_page_config(page_title="Mi Cuenta - Villa Soñada", layout="centered")
 
-# --- CONEXIÓN (La misma que tu app admin) ---
-def conectar():
-    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+# --- CONEXIÓN A SUPABASE ---
+@st.cache_resource
+def conectar_supabase():
     try:
-        # Usamos los mismos secretos que ya tenés configurados
-        creds_dict = dict(st.secrets["service_account"])
-        if "\\n" in creds_dict["private_key"]:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        gc = gspread.authorize(credentials)
-        return gc.open_by_url(st.secrets["connections"]["gsheets"]["spreadsheet"])
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["service_role_key"]
+        return create_client(url, key)
     except Exception as e:
-        st.error("⚠️ Error de conexión o mantenimiento.")
+        st.error("⚠️ Error de conexión a la base de datos.")
         st.stop()
 
 def cargar_datos():
-    sh = conectar()
+    client = conectar_supabase()
+    
     # Cargamos Movimientos
-    ws = sh.worksheet("Movimientos")
-    df = pd.DataFrame(ws.get_all_records())
+    resp_mov = client.table("movimientos").select("*").limit(100000).execute()
+    df = pd.DataFrame(resp_mov.data)
     
-    # Cargamos Socios (Para verificar nombres)
-    ws_soc = sh.worksheet("Socios")
-    df_soc = pd.DataFrame(ws_soc.get_all_records())
+    if not df.empty:
+        df["Fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+        df["Monto"] = pd.to_numeric(df["monto"], errors="coerce").fillna(0)
+        df = df.rename(columns={
+            "tipo": "Tipo", "categoria": "Categoria",
+            "socio": "Socio", "concepto": "Concepto",
+        })
+        
+    # Cargamos Socios (Para verificar nombres del enlace mágico)
+    resp_soc = client.table("socios").select("nombre").execute()
+    df_soc = pd.DataFrame(resp_soc.data)
+    lista_socios = df_soc["nombre"].tolist() if not df_soc.empty else []
     
-    return df, df_soc["Nombre"].tolist()
+    return df, lista_socios
 
 # --- INTERFAZ VISOR ---
 st.title("🏡 Villa Soñada - Estado de Cuenta")
@@ -39,7 +44,7 @@ st.title("🏡 Villa Soñada - Estado de Cuenta")
 # 1. Recuperar datos
 try:
     df, lista_socios = cargar_datos()
-except:
+except Exception as e:
     st.error("Error cargando la base de datos.")
     st.stop()
 
@@ -61,7 +66,7 @@ else:
 
 # 3. Mostrar la Información
 if not df.empty and vecino:
-    # Convertir números
+    # Asegurar tipos por si acaso
     df["Monto"] = pd.to_numeric(df["Monto"])
     df["Fecha"] = pd.to_datetime(df["Fecha"])
     
